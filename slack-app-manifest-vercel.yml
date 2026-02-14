@@ -1,0 +1,62 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
+display_information:
+  name: Accounting Bot
+  description: Automate invoice reconciliation with card and bank CSV statements
+  background_color: "#1a73e8"
+features:
+  app_home:
+    home_tab_enabled: false
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
+  bot_user:
+    display_name: Accounting Bot
+    always_online: false
+  slash_commands:
+    - command: /accounting-help
+      description: Show help
+      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      should_escape: false
+    - command: /accounting-status
+      description: Show current month accounting status
+      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      usage_hint: "[YYYY-MM]"
+      should_escape: false
+    - command: /accounting-subscriptions
+      description: List all subscriptions
+      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      should_escape: false
+    - command: /accounting-add-subscription
+      description: Register a new subscription
+      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      should_escape: false
+    - command: /accounting-invoices
+      description: List invoices
+      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      usage_hint: "[YYYY-MM]"
+      should_escape: false
+    - command: /accounting-fetch-invoices
+      description: Fetch invoices from email automatically
+      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      should_escape: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - chat:write.public
+      - commands
+      - files:read
+      - files:write
+      - users:read
+settings:
+  event_subscriptions:
+    request_url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+    bot_events:
+      - file_shared
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

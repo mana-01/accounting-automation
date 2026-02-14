@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/slack.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/slack",
+      "dest": "/api/slack.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/slack.py"
+    }
+  ],
+  "env": {
+    "PYTHONPATH": "."
+  }
+}
