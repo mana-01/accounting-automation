@@ -1,6 +1,7 @@
 """Google Spreadsheet service for data storage."""
 
 import os
+import json
 from typing import Optional
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -15,6 +16,35 @@ from ..models import (
 )
 
 
+def get_google_credentials(scopes: list[str]):
+    """Google認証情報を取得（複数の方法に対応）"""
+    # 方法1: GOOGLE_CREDENTIALS_JSON 環境変数（Vercel用）
+    creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if creds_json:
+        creds_dict = json.loads(creds_json)
+        return service_account.Credentials.from_service_account_info(
+            creds_dict, scopes=scopes
+        )
+
+    # 方法2: credentials.json ファイル
+    creds_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
+    if creds_path and os.path.exists(creds_path):
+        return service_account.Credentials.from_service_account_file(
+            creds_path, scopes=scopes
+        )
+
+    # 方法3: 個別の環境変数
+    return service_account.Credentials.from_service_account_info(
+        {
+            "type": "service_account",
+            "client_email": os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL"),
+            "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n"),
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+        scopes=scopes
+    )
+
+
 class SpreadsheetService:
     """Google Spreadsheet をデータベースとして使用するサービス"""
 
@@ -24,25 +54,9 @@ class SpreadsheetService:
 
     def _build_service(self):
         """Google Sheets API サービスを構築"""
-        creds_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
-
-        if creds_path and os.path.exists(creds_path):
-            credentials = service_account.Credentials.from_service_account_file(
-                creds_path,
-                scopes=["https://www.googleapis.com/auth/spreadsheets"]
-            )
-        else:
-            # 環境変数から認証情報を構築
-            credentials = service_account.Credentials.from_service_account_info(
-                {
-                    "type": "service_account",
-                    "client_email": os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL"),
-                    "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n"),
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                },
-                scopes=["https://www.googleapis.com/auth/spreadsheets"]
-            )
-
+        credentials = get_google_credentials(
+            ["https://www.googleapis.com/auth/spreadsheets"]
+        )
         return build("sheets", "v4", credentials=credentials)
 
     async def initialize(self) -> None:

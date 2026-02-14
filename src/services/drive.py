@@ -3,9 +3,10 @@
 import os
 from io import BytesIO
 from typing import Optional
-from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
+
+from .spreadsheet import get_google_credentials
 
 
 class DriveService:
@@ -17,24 +18,9 @@ class DriveService:
 
     def _build_service(self):
         """Google Drive API サービスを構築"""
-        creds_path = os.getenv("GOOGLE_CREDENTIALS_PATH")
-
-        if creds_path and os.path.exists(creds_path):
-            credentials = service_account.Credentials.from_service_account_file(
-                creds_path,
-                scopes=["https://www.googleapis.com/auth/drive"]
-            )
-        else:
-            credentials = service_account.Credentials.from_service_account_info(
-                {
-                    "type": "service_account",
-                    "client_email": os.getenv("GOOGLE_SERVICE_ACCOUNT_EMAIL"),
-                    "private_key": os.getenv("GOOGLE_PRIVATE_KEY", "").replace("\\n", "\n"),
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                },
-                scopes=["https://www.googleapis.com/auth/drive"]
-            )
-
+        credentials = get_google_credentials(
+            ["https://www.googleapis.com/auth/drive"]
+        )
         return build("drive", "v3", credentials=credentials)
 
     def get_or_create_monthly_folder(self, period: str) -> str:

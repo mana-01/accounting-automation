@@ -3,7 +3,10 @@
   "builds": [
     {
       "src": "api/slack.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "maxLambdaSize": "50mb"
+      }
     }
   ],
   "routes": [
@@ -15,8 +18,5 @@
       "src": "/(.*)",
       "dest": "/api/slack.py"
     }
-  ],
-  "env": {
-    "PYTHONPATH": "."
-  }
+  ]
 }
