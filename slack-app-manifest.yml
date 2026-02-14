@@ -1,42 +1,39 @@
+_metadata:
+  major_version: 1
+  minor_version: 1
 display_information:
-  name: 経理自動化Bot
-  description: カード・銀行明細CSVの照会と請求書管理を自動化
+  name: Accounting Bot
+  description: Automate invoice reconciliation with card and bank CSV statements
   background_color: "#1a73e8"
-
 features:
   app_home:
     home_tab_enabled: false
     messages_tab_enabled: true
     messages_tab_read_only_enabled: false
   bot_user:
-    display_name: 経理Bot
+    display_name: Accounting Bot
     always_online: true
   slash_commands:
     - command: /accounting-help
-      description: ヘルプを表示
-      usage_hint: ""
+      description: Show help
       should_escape: false
     - command: /accounting-status
-      description: 今月の経理状況を表示
-      usage_hint: "[YYYY年MM月]"
+      description: Show current month accounting status
+      usage_hint: "[YYYY-MM]"
       should_escape: false
     - command: /accounting-subscriptions
-      description: サブスクリプション一覧を表示
-      usage_hint: ""
+      description: List all subscriptions
       should_escape: false
     - command: /accounting-add-subscription
-      description: 新しいサブスクリプションを登録
-      usage_hint: ""
+      description: Register a new subscription
       should_escape: false
     - command: /accounting-invoices
-      description: 請求書一覧を表示
-      usage_hint: "[YYYY年MM月]"
+      description: List invoices
+      usage_hint: "[YYYY-MM]"
       should_escape: false
     - command: /accounting-fetch-invoices
-      description: メールから請求書を自動取得
-      usage_hint: ""
+      description: Fetch invoices from email automatically
       should_escape: false
-
 oauth_config:
   scopes:
     bot:
@@ -46,7 +43,6 @@ oauth_config:
       - files:read
       - files:write
       - users:read
-
 settings:
   event_subscriptions:
     bot_events:
