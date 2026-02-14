@@ -1,17 +1,18 @@
 """Main application entry point."""
 
 import os
-import asyncio
 from dotenv import load_dotenv
+
+# 環境変数を最初に読み込み（他のimportより前に）
+load_dotenv()
+
+import asyncio
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
 from .handlers import register_commands, register_events, register_actions
 from .services.spreadsheet import spreadsheet_service
 from .utils.scheduler import Scheduler
-
-# 環境変数を読み込み
-load_dotenv()
 
 
 def create_app() -> App:
