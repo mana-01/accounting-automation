@@ -33,13 +33,16 @@ def handle_help(ack, respond):
 *コマンド一覧:*
 • `/accounting-help` - このヘルプを表示
 • `/accounting-status` - 今月の経理状況を確認
-• `/accounting-subscriptions` - サブスク一覧を表示
-• `/accounting-add-subscription` - 新しいサブスクを登録
+• `/accounting-fetch-invoices` - メールから請求書を自動取得
+• `/accounting-add-email-rule` - メール取得ルールを追加
+• `/accounting-invoices` - 取得済み請求書一覧
 
 *使い方:*
-1. カード/銀行のCSV明細をこのチャンネルにアップロード
-2. 自動で照会が実行されます
-3. 不足している請求書がリストアップされます
+1. `/accounting-add-email-rule` でメール取得ルールを設定
+2. `/accounting-fetch-invoices` でメールから請求書を自動取得
+3. カード/銀行のCSV明細をアップロード
+4. CSV ↔ 請求書を照会
+5. 不足している請求書がリストアップされます
 
 *請求書の保存:*
 PDFファイルをアップロードすると、Google Driveに保存できます。"""
@@ -50,39 +53,57 @@ PDFファイルをアップロードすると、Google Driveに保存できま�
 def handle_status(ack, respond):
     """状況を表示"""
     ack()
-    respond({
-        "response_type": "ephemeral",
-        "text": "📊 *経理状況*\n\n現在セットアップ中です。CSVをアップロードして照会を開始してください。"
-    })
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        # Spreadsheetから請求書数を取得
+        result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="invoices!A2:H1000"
+        ).execute()
+        invoices = result.get("values", [])
+
+        # ルール数を取得
+        rules_result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="email_rules!A2:E100"
+        ).execute()
+        rules = rules_result.get("values", [])
+
+        respond({
+            "response_type": "ephemeral",
+            "text": f"""📊 *経理状況*
+
+• メール取得ルール: {len(rules)}件
+• 取得済み請求書: {len(invoices)}件
+
+`/accounting-fetch-invoices` でメールから請求書を取得できます。"""
+        })
+    except Exception as e:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"📊 *経理状況*\n\nデータ取得中にエラー: {str(e)}"
+        })
 
 
-@slack_app.command("/accounting-subscriptions")
-def handle_subscriptions(ack, respond):
-    """サブスク一覧"""
-    ack()
-    respond({
-        "response_type": "ephemeral",
-        "text": "📋 *サブスクリプション一覧*\n\nまだ登録されていません。`/accounting-add-subscription` で登録してください。"
-    })
-
-
-@slack_app.command("/accounting-add-subscription")
-def handle_add_subscription(ack, client, body):
-    """サブスク登録モーダル"""
+@slack_app.command("/accounting-add-email-rule")
+def handle_add_email_rule(ack, client, body):
+    """メール取得ルール追加モーダル"""
     ack()
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
             "type": "modal",
-            "callback_id": "add_subscription_modal",
-            "title": {"type": "plain_text", "text": "サブスク登録"},
-            "submit": {"type": "plain_text", "text": "登録"},
+            "callback_id": "add_email_rule_modal",
+            "title": {"type": "plain_text", "text": "メール取得ルール追加"},
+            "submit": {"type": "plain_text", "text": "追加"},
             "close": {"type": "plain_text", "text": "キャンセル"},
             "blocks": [
                 {
                     "type": "input",
                     "block_id": "name_block",
-                    "label": {"type": "plain_text", "text": "サービス名"},
+                    "label": {"type": "plain_text", "text": "ルール名（サービス名）"},
                     "element": {
                         "type": "plain_text_input",
                         "action_id": "name_input",
@@ -91,12 +112,45 @@ def handle_add_subscription(ack, client, body):
                 },
                 {
                     "type": "input",
-                    "block_id": "amount_block",
-                    "label": {"type": "plain_text", "text": "月額 (円)"},
+                    "block_id": "sender_block",
+                    "label": {"type": "plain_text", "text": "送信者メールアドレス"},
                     "element": {
                         "type": "plain_text_input",
-                        "action_id": "amount_input",
-                        "placeholder": {"type": "plain_text", "text": "例: 10000"}
+                        "action_id": "sender_input",
+                        "placeholder": {"type": "plain_text", "text": "例: billing@aws.amazon.com"}
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "subject_block",
+                    "label": {"type": "plain_text", "text": "件名キーワード"},
+                    "element": {
+                        "type": "plain_text_input",
+                        "action_id": "subject_input",
+                        "placeholder": {"type": "plain_text", "text": "例: Invoice, 請求書, ご利用明細"}
+                    }
+                },
+                {
+                    "type": "input",
+                    "block_id": "type_block",
+                    "label": {"type": "plain_text", "text": "取得タイプ"},
+                    "element": {
+                        "type": "static_select",
+                        "action_id": "type_select",
+                        "options": [
+                            {
+                                "text": {"type": "plain_text", "text": "PDF添付ファイル"},
+                                "value": "attachment"
+                            },
+                            {
+                                "text": {"type": "plain_text", "text": "メール内リンク"},
+                                "value": "link"
+                            }
+                        ],
+                        "initial_option": {
+                            "text": {"type": "plain_text", "text": "PDF添付ファイル"},
+                            "value": "attachment"
+                        }
                     }
                 }
             ]
@@ -104,23 +158,163 @@ def handle_add_subscription(ack, client, body):
     )
 
 
+@slack_app.view("add_email_rule_modal")
+def handle_add_email_rule_submission(ack, body, client, view):
+    """メール取得ルール追加の処理"""
+    ack()
+
+    try:
+        values = view["state"]["values"]
+        name = values["name_block"]["name_input"]["value"]
+        sender = values["sender_block"]["sender_input"]["value"]
+        subject = values["subject_block"]["subject_input"]["value"]
+        fetch_type = values["type_block"]["type_select"]["selected_option"]["value"]
+
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        # Spreadsheetに追加
+        row = [name, sender, subject, fetch_type, ""]
+        invoice_fetcher.sheets.spreadsheets().values().append(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="email_rules!A:E",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]}
+        ).execute()
+
+        user_id = body["user"]["id"]
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"""✅ メール取得ルールを追加しました！
+
+• *ルール名*: {name}
+• *送信者*: {sender}
+• *件名キーワード*: {subject}
+• *取得タイプ*: {"PDF添付" if fetch_type == "attachment" else "リンク"}
+
+`/accounting-fetch-invoices` で請求書を取得できます。"""
+        )
+
+    except Exception as e:
+        user_id = body["user"]["id"]
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"❌ ルール追加エラー: {str(e)}"
+        )
+
+
+@slack_app.command("/accounting-fetch-invoices")
+def handle_fetch_invoices(ack, respond, client):
+    """メールから請求書を自動取得"""
+    ack()
+
+    respond({
+        "response_type": "ephemeral",
+        "text": "📥 メールから請求書を取得中..."
+    })
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        results = invoice_fetcher.fetch_invoices(days_back=30)
+
+        if results["errors"]:
+            error_text = "\n".join(results["errors"][:3])
+            respond({
+                "response_type": "ephemeral",
+                "text": f"""⚠️ *請求書取得完了（エラーあり）*
+
+• 処理したメール: {results['processed']}件
+• 保存した請求書: {results['saved']}件
+
+*エラー:*
+{error_text}"""
+            })
+        else:
+            invoice_list = ""
+            for inv in results["invoices"][:5]:
+                invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
+
+            respond({
+                "response_type": "ephemeral",
+                "text": f"""✅ *請求書取得完了*
+
+• 処理したメール: {results['processed']}件
+• 保存した請求書: {results['saved']}件
+{invoice_list if invoice_list else ''}
+
+Google Driveに保存されました。"""
+            })
+
+    except Exception as e:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"❌ エラー: {str(e)}\n\nGmail APIの設定を確認してください。"
+        })
+
+
 @slack_app.command("/accounting-invoices")
 def handle_invoices(ack, respond):
     """請求書一覧"""
     ack()
-    respond({
-        "response_type": "ephemeral",
-        "text": "📄 *請求書一覧*\n\nまだ請求書がありません。PDFをアップロードするか、メールから自動取得してください。"
-    })
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="invoices!A2:H100"
+        ).execute()
+
+        rows = result.get("values", [])
+
+        if not rows:
+            respond({
+                "response_type": "ephemeral",
+                "text": "📄 *請求書一覧*\n\nまだ請求書がありません。`/accounting-fetch-invoices` で取得してください。"
+            })
+            return
+
+        invoice_list = ""
+        for row in rows[-10:]:  # 最新10件
+            vendor = row[1] if len(row) > 1 else "不明"
+            amount = row[2] if len(row) > 2 else "-"
+            date = row[3] if len(row) > 3 else ""
+            url = row[5] if len(row) > 5 else ""
+
+            if url:
+                invoice_list += f"\n• <{url}|{vendor}> - {date} (¥{amount})"
+            else:
+                invoice_list += f"\n• {vendor} - {date} (¥{amount})"
+
+        respond({
+            "response_type": "ephemeral",
+            "text": f"📄 *請求書一覧（最新10件）*\n{invoice_list}"
+        })
+
+    except Exception as e:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"❌ エラー: {str(e)}"
+        })
 
 
-@slack_app.command("/accounting-fetch-invoices")
-def handle_fetch_invoices(ack, respond):
-    """請求書取得"""
+@slack_app.command("/accounting-subscriptions")
+def handle_subscriptions(ack, respond):
+    """サブスク一覧（使わないが互換性のため残す）"""
     ack()
     respond({
         "response_type": "ephemeral",
-        "text": "📥 *請求書取得*\n\nメールからの自動取得機能は現在準備中です。"
+        "text": "📋 この機能は `/accounting-add-email-rule` に置き換えられました。"
+    })
+
+
+@slack_app.command("/accounting-add-subscription")
+def handle_add_subscription(ack, respond):
+    """サブスク登録（使わないが互換性のため残す）"""
+    ack()
+    respond({
+        "response_type": "ephemeral",
+        "text": "📋 この機能は `/accounting-add-email-rule` に置き換えられました。"
     })
 
 
@@ -143,10 +337,10 @@ def handle_file_shared(event, client, say):
                 channel=channel_id,
                 text=f"📄 CSV ファイル `{file_name}` を検出しました。\n照会処理を開始します..."
             )
-            # TODO: CSV処理を実装
+            # TODO: CSV照会処理を実装
             say(
                 channel=channel_id,
-                text="✅ 照会が完了しました！（デモ版）"
+                text="✅ 照会機能は現在開発中です。"
             )
         elif file_type == "pdf" or file_name.endswith(".pdf"):
             say(
@@ -179,6 +373,81 @@ def handle_file_shared(event, client, say):
             )
     except Exception as e:
         print(f"Error handling file: {e}")
+
+
+@slack_app.action("save_invoice_pdf")
+def handle_save_invoice_pdf(ack, body, client):
+    """PDFを請求書として保存"""
+    ack()
+
+    file_id = body["actions"][0]["value"]
+    user_id = body["user"]["id"]
+    channel_id = body["channel"]["id"]
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+        import requests
+        from datetime import datetime
+
+        # ファイル情報を取得
+        file_info = client.files_info(file=file_id)
+        file_data = file_info["file"]
+        file_name = file_data.get("name", "invoice.pdf")
+        download_url = file_data.get("url_private_download")
+
+        # ファイルをダウンロード
+        headers = {"Authorization": f"Bearer {os.environ.get('SLACK_BOT_TOKEN')}"}
+        response = requests.get(download_url, headers=headers)
+
+        if response.status_code != 200:
+            raise Exception("ファイルのダウンロードに失敗しました")
+
+        # 期間を計算
+        now = datetime.now()
+        period = f"{now.year}年{now.month}月"
+
+        # Google Driveに保存
+        drive_result = invoice_fetcher.save_to_drive(
+            response.content,
+            file_name,
+            period
+        )
+
+        # Spreadsheetに記録
+        invoice_data = {
+            "id": f"manual_{now.timestamp()}",
+            "vendor": "手動アップロード",
+            "amount": "",
+            "date": now.strftime("%Y-%m-%d"),
+            "source": "slack_upload",
+            "drive_url": drive_result["web_view_link"],
+            "status": "pending"
+        }
+        invoice_fetcher.record_invoice(invoice_data)
+
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"✅ 請求書を保存しました！\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+        )
+
+    except Exception as e:
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ 保存エラー: {str(e)}"
+        )
+
+
+@slack_app.action("skip_file")
+def handle_skip_file(ack, body, client):
+    """ファイルをスキップ"""
+    ack()
+    # メッセージを更新
+    client.chat_update(
+        channel=body["channel"]["id"],
+        ts=body["message"]["ts"],
+        text="ファイルをスキップしました。",
+        blocks=[]
+    )
 
 
 # === Flask Routes ===
