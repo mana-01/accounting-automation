@@ -690,7 +690,7 @@ class InvoiceFetcher:
             return []
 
     def reconcile_csv(self, transactions: list[dict], period_code: str) -> dict:
-        """CSV取引と請求書を照合"""
+        """CSV取引と請求書を照合（金額と日付ベース）"""
         invoices = self.get_invoices_for_period(period_code)
         rules = self.get_email_rules()
         rule_names = {r["name"].lower() for r in rules}
@@ -698,30 +698,65 @@ class InvoiceFetcher:
         matched = []
         missing = []
         unregistered_vendors = []
+        used_invoices = set()  # 同じ請求書を複数回マッチさせない
 
         for tx in transactions:
-            vendor_lower = tx["vendor"].lower()
+            tx_vendor_lower = tx["vendor"].lower()
+            tx_amount = tx.get("amount", 0)
+            tx_date = tx.get("date", "")  # YYYY-MM-DD形式を想定
 
             # 請求書と照合
             found = False
-            for inv in invoices:
+            for idx, inv in enumerate(invoices):
+                if idx in used_invoices:
+                    continue
+
                 inv_vendor_lower = inv["vendor"].lower()
-                # ベンダー名が部分一致し、金額が一致
-                if (inv_vendor_lower in vendor_lower or vendor_lower in inv_vendor_lower):
-                    if not inv["amount"] or int(inv.get("amount", 0) or 0) == tx["amount"]:
-                        matched.append({
-                            "transaction": tx,
-                            "invoice": inv
-                        })
-                        found = True
-                        break
+                inv_date = inv.get("date", "")  # YYYY-MM-DD形式を想定
+                inv_amount_str = inv.get("amount", "")
+
+                # 金額の比較（請求書に金額がある場合のみ）
+                amount_match = False
+                if inv_amount_str:
+                    try:
+                        inv_amount = int(str(inv_amount_str).replace(",", "").replace("¥", ""))
+                        amount_match = (inv_amount == tx_amount)
+                    except (ValueError, TypeError):
+                        amount_match = False
+                else:
+                    # 請求書に金額がない場合はベンダー名で判断
+                    amount_match = (inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower)
+
+                # 日付の比較（同じ月かどうか）
+                date_match = False
+                if tx_date and inv_date:
+                    # YYYY-MM部分を比較
+                    tx_month = tx_date[:7] if len(tx_date) >= 7 else ""
+                    inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
+                    date_match = (tx_month == inv_month)
+                else:
+                    # 日付がない場合は期間コードで判断
+                    date_match = True
+
+                # ベンダー名の部分一致もチェック（補助条件）
+                vendor_match = (inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower)
+
+                # マッチ条件: (金額一致 AND 日付一致) OR (ベンダー一致 AND 日付一致)
+                if (amount_match and date_match) or (vendor_match and date_match and amount_match):
+                    matched.append({
+                        "transaction": tx,
+                        "invoice": inv
+                    })
+                    used_invoices.add(idx)
+                    found = True
+                    break
 
             if not found:
                 missing.append(tx)
 
                 # ルール登録済みかチェック
                 vendor_registered = any(
-                    rn in vendor_lower or vendor_lower in rn
+                    rn in tx_vendor_lower or tx_vendor_lower in rn
                     for rn in rule_names
                 )
                 if not vendor_registered:
