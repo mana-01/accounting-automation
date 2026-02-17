@@ -131,13 +131,13 @@ class InvoiceFetcher:
 
     def __init__(self):
         # 複数アカウント対応（カンマ区切り）
-        emails_str = os.environ.get("GMAIL_USER_EMAILS", "")
+        # GMAIL_USER_EMAILS または GMAIL_USER_EMAIL どちらでもOK
+        emails_str = os.environ.get("GMAIL_USER_EMAILS", "") or os.environ.get("GMAIL_USER_EMAIL", "")
         if emails_str:
+            # カンマ区切りの場合は分割、単一の場合はそのまま
             self.gmail_users = [e.strip() for e in emails_str.split(",") if e.strip()]
         else:
-            # 後方互換: 単一アカウント
-            single_email = os.environ.get("GMAIL_USER_EMAIL", "")
-            self.gmail_users = [single_email] if single_email else []
+            self.gmail_users = []
 
         self.gmail_user = self.gmail_users[0] if self.gmail_users else ""
         self.spreadsheet_id = os.environ.get("GOOGLE_SPREADSHEET_ID", "")
