@@ -2,6 +2,7 @@
 
 import os
 import json
+import re
 from flask import Flask, request, Response
 from slack_bolt import App as SlackApp
 from slack_bolt.adapter.flask import SlackRequestHandler
@@ -896,27 +897,79 @@ def handle_reconcile(ack, respond, body):
         missing_count = reconcile_result["missing_count"]
         total = reconcile_result["total_transactions"]
 
-        missing_list = ""
-        for tx in reconcile_result["missing"][:15]:
-            missing_list += f"\n• {tx['vendor']}: ¥{tx['amount']:,}"
+        # 除外するキーワード（手数料、利息など）
+        exclude_keywords = ["手数料", "利息", "振込手数料", "入金", "税金", "給与", "給料", "年金", "保険料"]
 
-        unregistered_list = ""
-        for tx in reconcile_result["unregistered_vendors"][:10]:
-            unregistered_list += f"\n• {tx['vendor']}"
+        # ベンダー名をクリーンアップ
+        def clean_vendor_name(name: str) -> str:
+            # Mastercard/Visa等のプレフィックスを削除
+            name = re.sub(r"^(Mastercard|MASTERCARD|Visa|VISA|JCB)\s*", "", name, flags=re.IGNORECASE)
+            # TID、番号などを削除
+            name = re.sub(r"\s*(TID|TIDF)[\w\d]+", "", name, flags=re.IGNORECASE)
+            name = re.sub(r"\s*F[番号ԍ]F[\d]+", "", name)
+            # 長すぎる場合は切り詰め
+            if len(name) > 25:
+                name = name[:25] + "..."
+            return name.strip()
 
-        respond({
-            "response_type": "ephemeral",
-            "text": f"""📊 *照会結果 ({text})*
+        def should_exclude(vendor: str) -> bool:
+            return any(kw in vendor for kw in exclude_keywords)
+
+        # ベンダーごとにグルーピング（銀行・クレジット別）
+        from collections import defaultdict
+        bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        credit_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+
+        for tx in reconcile_result["missing"]:
+            if should_exclude(tx["vendor"]):
+                continue
+
+            cleaned_name = clean_vendor_name(tx["vendor"])
+            if not cleaned_name:
+                continue
+
+            tx_type = tx.get("type", "bank")
+
+            if tx_type in ["credit", "saison"]:
+                credit_vendors[cleaned_name]["count"] += 1
+                credit_vendors[cleaned_name]["total"] += tx.get("amount", 0)
+            else:
+                bank_vendors[cleaned_name]["count"] += 1
+                bank_vendors[cleaned_name]["total"] += tx.get("amount", 0)
+
+        # 金額でソート
+        bank_sorted = sorted(bank_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
+        credit_sorted = sorted(credit_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
+
+        bank_list = ""
+        for name, data in bank_sorted[:10]:
+            bank_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
+
+        credit_list = ""
+        for name, data in credit_sorted[:10]:
+            credit_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
+
+        result_text = f"""📊 *照会結果 ({text})*
 
 • 総取引数: {total}件
 • ✅ 一致: {matched_count}件
 • ❌ 不足: {missing_count}件
+"""
 
-{"*不足している請求書:*" + missing_list if missing_list else ""}
+        if bank_list:
+            result_text += f"\n*🏦 銀行振込（ルール登録推奨）:*{bank_list}\n"
 
-{"*未登録のベンダー（ルール登録推奨）:*" + unregistered_list if unregistered_list else ""}
+        if credit_list:
+            result_text += f"\n*💳 クレジット（ルール登録推奨）:*{credit_list}\n"
 
-不足分は `/accounting-add-email-rule` でルール追加するか、PDFを手動アップロードしてください。"""
+        if bank_list or credit_list:
+            result_text += "\n`/accounting-add-email-rule` でルール追加するか、PDFを手動アップロードしてください。"
+        else:
+            result_text += "\n✨ すべての取引が照合済みです！"
+
+        respond({
+            "response_type": "ephemeral",
+            "text": result_text
         })
 
     except Exception as e:
