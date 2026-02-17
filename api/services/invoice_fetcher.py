@@ -130,25 +130,38 @@ class InvoiceFetcher:
     """メールから請求書を取得するサービス"""
 
     def __init__(self):
-        self.gmail_user = os.environ.get("GMAIL_USER_EMAIL", "")
+        # 複数アカウント対応（カンマ区切り）
+        emails_str = os.environ.get("GMAIL_USER_EMAILS", "")
+        if emails_str:
+            self.gmail_users = [e.strip() for e in emails_str.split(",") if e.strip()]
+        else:
+            # 後方互換: 単一アカウント
+            single_email = os.environ.get("GMAIL_USER_EMAIL", "")
+            self.gmail_users = [single_email] if single_email else []
+
+        self.gmail_user = self.gmail_users[0] if self.gmail_users else ""
         self.spreadsheet_id = os.environ.get("GOOGLE_SPREADSHEET_ID", "")
         self.drive_folder_id = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
 
-        # Google API clients
-        self._gmail = None
+        # Google API clients (per user)
+        self._gmail_clients = {}
         self._drive = None
         self._sheets = None
 
-    @property
-    def gmail(self):
-        if not self._gmail:
+    def get_gmail_client(self, user_email: str):
+        """指定ユーザーのGmail APIクライアントを取得"""
+        if user_email not in self._gmail_clients:
             creds = get_google_credentials([
                 "https://www.googleapis.com/auth/gmail.readonly"
             ])
-            # Gmail APIはドメイン全体の委任が必要
-            delegated = creds.with_subject(self.gmail_user)
-            self._gmail = build("gmail", "v1", credentials=delegated)
-        return self._gmail
+            delegated = creds.with_subject(user_email)
+            self._gmail_clients[user_email] = build("gmail", "v1", credentials=delegated)
+        return self._gmail_clients[user_email]
+
+    @property
+    def gmail(self):
+        """デフォルトアカウントのGmailクライアント（後方互換）"""
+        return self.get_gmail_client(self.gmail_user) if self.gmail_user else None
 
     @property
     def drive(self):
@@ -195,10 +208,12 @@ class InvoiceFetcher:
             return []
 
     def search_emails(self, rule: dict, days_back: int = 30,
-                      start_date: str = None, end_date: str = None) -> list[dict]:
+                      start_date: str = None, end_date: str = None,
+                      user_email: str = None) -> list[dict]:
         """
         ルールに基づいてメールを検索
         start_date/end_date: "YYYY/MM/DD" 形式
+        user_email: 検索対象のGmailアカウント（省略時はデフォルト）
         """
         query_parts = []
 
@@ -222,10 +237,12 @@ class InvoiceFetcher:
             query_parts.append("has:attachment filename:pdf")
 
         query = " ".join(query_parts)
-        print(f"Gmail search query: {query}")
+        target_email = user_email or self.gmail_user
+        print(f"Gmail search query ({target_email}): {query}")
 
         try:
-            results = self.gmail.users().messages().list(
+            gmail_client = self.get_gmail_client(target_email)
+            results = gmail_client.users().messages().list(
                 userId="me",
                 q=query,
                 maxResults=100
@@ -235,10 +252,12 @@ class InvoiceFetcher:
             detailed = []
 
             for msg in messages:
-                full = self.gmail.users().messages().get(
+                full = gmail_client.users().messages().get(
                     userId="me",
                     id=msg["id"]
                 ).execute()
+                # 検索元アカウント情報を付与
+                full["_gmail_user"] = target_email
                 detailed.append(full)
 
             return detailed
@@ -252,12 +271,16 @@ class InvoiceFetcher:
         payload = message.get("payload", {})
         parts = payload.get("parts", [])
 
+        # メッセージに付与されたユーザー情報を使用
+        user_email = message.get("_gmail_user", self.gmail_user)
+        gmail_client = self.get_gmail_client(user_email)
+
         for part in parts:
             filename = part.get("filename", "")
             if filename.lower().endswith(".pdf"):
                 attachment_id = part.get("body", {}).get("attachmentId")
                 if attachment_id:
-                    attachment = self.gmail.users().messages().attachments().get(
+                    attachment = gmail_client.users().messages().attachments().get(
                         userId="me",
                         messageId=message["id"],
                         id=attachment_id
@@ -493,60 +516,62 @@ class InvoiceFetcher:
         }
 
         for rule in rules:
-            try:
-                emails = self.search_emails(rule, days_back)
-                results["processed"] += len(emails)
+            # 全Gmailアカウントを検索
+            for user_email in self.gmail_users:
+                try:
+                    emails = self.search_emails(rule, days_back, user_email=user_email)
+                    results["processed"] += len(emails)
 
-                for email in emails:
-                    email_date = self.get_message_date(email)
-                    subject = self.get_message_subject(email)
+                    for email in emails:
+                        email_date = self.get_message_date(email)
+                        subject = self.get_message_subject(email)
 
-                    # 期間を計算（YYYY年M月形式）
-                    try:
-                        dt = datetime.strptime(email_date, "%Y-%m-%d")
-                        period = f"{dt.year}年{dt.month}月"
-                    except:
-                        period = datetime.now().strftime("%Y年%m月")
+                        # 期間を計算（YYYY年M月形式）
+                        try:
+                            dt = datetime.strptime(email_date, "%Y-%m-%d")
+                            period = f"{dt.year}年{dt.month}月"
+                        except:
+                            period = datetime.now().strftime("%Y年%m月")
 
-                    if rule.get("fetch_type") == "attachment":
-                        # PDF添付ファイルを取得
-                        attachments = self.get_attachments(email)
-                        for att in attachments:
-                            filename = f"{rule['name']}_{email_date}_{att['filename']}"
-                            drive_result = self.save_to_drive(
-                                att["data"],
-                                filename,
-                                period
-                            )
+                        if rule.get("fetch_type") == "attachment":
+                            # PDF添付ファイルを取得
+                            attachments = self.get_attachments(email)
+                            for att in attachments:
+                                filename = f"{rule['name']}_{email_date}_{att['filename']}"
+                                drive_result = self.save_to_drive(
+                                    att["data"],
+                                    filename,
+                                    period
+                                )
 
-                            # PDFから金額を抽出
-                            amount = extract_amount_from_pdf(att["data"])
+                                # PDFから金額を抽出
+                                amount = extract_amount_from_pdf(att["data"])
 
-                            invoice_data = {
-                                "id": f"inv_{datetime.now().timestamp()}",
-                                "vendor": rule["name"],
-                                "amount": str(amount) if amount else "",
-                                "date": email_date,
-                                "source": "email_attachment",
-                                "drive_url": drive_result["web_view_link"],
-                                "status": "pending"
-                            }
-                            self.record_invoice(invoice_data)
-                            results["saved"] += 1
-                            results["invoices"].append(invoice_data)
+                                invoice_data = {
+                                    "id": f"inv_{datetime.now().timestamp()}",
+                                    "vendor": rule["name"],
+                                    "amount": str(amount) if amount else "",
+                                    "date": email_date,
+                                    "source": "email_attachment",
+                                    "drive_url": drive_result["web_view_link"],
+                                    "status": "pending"
+                                }
+                                self.record_invoice(invoice_data)
+                                results["saved"] += 1
+                                results["invoices"].append(invoice_data)
 
-                    elif rule.get("fetch_type") == "link":
-                        # リンクから取得（TODO: 実装）
-                        links = self.extract_links(email, rule.get("link_pattern"))
-                        for link in links:
-                            results["invoices"].append({
-                                "vendor": rule["name"],
-                                "link": link,
-                                "status": "link_found"
-                            })
+                        elif rule.get("fetch_type") == "link":
+                            # リンクから取得（TODO: 実装）
+                            links = self.extract_links(email, rule.get("link_pattern"))
+                            for link in links:
+                                results["invoices"].append({
+                                    "vendor": rule["name"],
+                                    "link": link,
+                                    "status": "link_found"
+                                })
 
-            except Exception as e:
-                results["errors"].append(f"{rule.get('name', 'unknown')}: {str(e)}")
+                except Exception as e:
+                    results["errors"].append(f"{rule.get('name', 'unknown')} ({user_email}): {str(e)}")
 
         return results
 
@@ -589,53 +614,56 @@ class InvoiceFetcher:
             end_date = f"{end_year}/{end_month:02d}/01"
 
             for rule in rules:
-                try:
-                    emails = self.search_emails(
-                        rule,
-                        start_date=start_date,
-                        end_date=end_date
-                    )
-                    results["processed"] += len(emails)
+                # 全Gmailアカウントを検索
+                for user_email in self.gmail_users:
+                    try:
+                        emails = self.search_emails(
+                            rule,
+                            start_date=start_date,
+                            end_date=end_date,
+                            user_email=user_email
+                        )
+                        results["processed"] += len(emails)
 
-                    for email in emails:
-                        email_date = self.get_message_date(email)
+                        for email in emails:
+                            email_date = self.get_message_date(email)
 
-                        if rule.get("fetch_type") == "attachment":
-                            attachments = self.get_attachments(email)
-                            for att in attachments:
-                                filename = f"{rule['name']}_{email_date}_{att['filename']}"
-                                drive_result = self.save_to_drive(
-                                    att["data"],
-                                    filename,
-                                    period_code,
-                                    invoice_type="credit"
-                                )
+                            if rule.get("fetch_type") == "attachment":
+                                attachments = self.get_attachments(email)
+                                for att in attachments:
+                                    filename = f"{rule['name']}_{email_date}_{att['filename']}"
+                                    drive_result = self.save_to_drive(
+                                        att["data"],
+                                        filename,
+                                        period_code,
+                                        invoice_type="credit"
+                                    )
 
-                                # 重複の場合はスキップ
-                                if drive_result.get("skipped"):
-                                    results["skipped"] += 1
-                                    continue
+                                    # 重複の場合はスキップ
+                                    if drive_result.get("skipped"):
+                                        results["skipped"] += 1
+                                        continue
 
-                                # PDFから金額を抽出
-                                amount = extract_amount_from_pdf(att["data"])
+                                    # PDFから金額を抽出
+                                    amount = extract_amount_from_pdf(att["data"])
 
-                                invoice_data = {
-                                    "id": f"inv_{datetime.now().timestamp()}",
-                                    "vendor": rule["name"],
-                                    "amount": str(amount) if amount else "",
-                                    "date": email_date,
-                                    "period": period_code,
-                                    "source": "email_attachment",
-                                    "drive_url": drive_result["web_view_link"],
-                                    "type": "credit",
-                                    "status": "pending"
-                                }
-                                self.record_invoice(invoice_data)
-                                results["saved"] += 1
-                                results["invoices"].append(invoice_data)
+                                    invoice_data = {
+                                        "id": f"inv_{datetime.now().timestamp()}",
+                                        "vendor": rule["name"],
+                                        "amount": str(amount) if amount else "",
+                                        "date": email_date,
+                                        "period": period_code,
+                                        "source": "email_attachment",
+                                        "drive_url": drive_result["web_view_link"],
+                                        "type": "credit",
+                                        "status": "pending"
+                                    }
+                                    self.record_invoice(invoice_data)
+                                    results["saved"] += 1
+                                    results["invoices"].append(invoice_data)
 
-                except Exception as e:
-                    results["errors"].append(f"{rule.get('name', 'unknown')} ({period_code}): {str(e)}")
+                    except Exception as e:
+                        results["errors"].append(f"{rule.get('name', 'unknown')} ({user_email}, {period_code}): {str(e)}")
 
         return results
 
