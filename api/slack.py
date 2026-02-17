@@ -33,20 +33,27 @@ def handle_help(ack, respond):
 *コマンド一覧:*
 • `/accounting-help` - このヘルプを表示
 • `/accounting-status` - 今月の経理状況を確認
-• `/accounting-fetch-invoices` - メールから請求書を自動取得
+• `/accounting-fetch-invoices [期間]` - メールから請求書を自動取得
 • `/accounting-add-email-rule` - メール取得ルールを追加
 • `/accounting-email-rules` - ルール一覧・削除
 • `/accounting-invoices` - 取得済み請求書一覧
+• `/accounting-reconcile [期間]` - CSV照会を実行
+
+*期間指定の例:*
+• `202602` - 2026年2月分のみ
+• `202509~202601` - 2025年9月〜2026年1月
 
 *使い方:*
 1. `/accounting-add-email-rule` でメール取得ルールを設定
-2. `/accounting-fetch-invoices` でメールから請求書を自動取得
-3. カード/銀行のCSV明細をアップロード
-4. CSV ↔ 請求書を照会
+2. `/accounting-fetch-invoices 202602` でメールから請求書を取得
+3. CSVファイルをアップロード（Saisonまたは銀行）
+4. `/accounting-reconcile 202602` で照会
 5. 不足している請求書がリストアップされます
 
-*請求書の保存:*
-PDFファイルをアップロードすると、Google Driveに保存できます。"""
+*フォルダ構造:*
+📁 2026年2月/
+├── 📁 202602_クレジット/
+└── 📁 202602_銀行振込/"""
     })
 
 
@@ -204,52 +211,105 @@ def handle_add_email_rule_submission(ack, body, client, view):
 
 
 @slack_app.command("/accounting-fetch-invoices")
-def handle_fetch_invoices(ack, respond, client):
+def handle_fetch_invoices(ack, respond, body):
     """メールから請求書を自動取得"""
     ack()
 
-    respond({
-        "response_type": "ephemeral",
-        "text": "📥 メールから請求書を取得中..."
-    })
+    # 引数から期間を取得
+    text = body.get("text", "").strip()
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher
 
-        results = invoice_fetcher.fetch_invoices(days_back=30)
-
-        if results["errors"]:
-            error_text = "\n".join(results["errors"][:3])
+        if text:
+            # 期間指定あり
             respond({
                 "response_type": "ephemeral",
-                "text": f"""⚠️ *請求書取得完了（エラーあり）*
+                "text": f"📥 期間 `{text}` の請求書を取得中...\nフォルダを作成しています..."
+            })
+
+            results = invoice_fetcher.fetch_invoices_by_period(text)
+
+            # 作成したフォルダ情報
+            periods_info = ""
+            for p in results.get("periods_created", [])[:5]:
+                periods_info += f"\n• {p['period']}"
+
+            if results["errors"]:
+                error_text = "\n".join(results["errors"][:3])
+                respond({
+                    "response_type": "ephemeral",
+                    "text": f"""⚠️ *請求書取得完了（エラーあり）*
+
+*作成したフォルダ:*{periods_info}
 
 • 処理したメール: {results['processed']}件
 • 保存した請求書: {results['saved']}件
 
 *エラー:*
 {error_text}"""
-            })
-        else:
-            invoice_list = ""
-            for inv in results["invoices"][:5]:
-                invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
+                })
+            else:
+                invoice_list = ""
+                for inv in results["invoices"][:5]:
+                    invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
 
-            respond({
-                "response_type": "ephemeral",
-                "text": f"""✅ *請求書取得完了*
+                respond({
+                    "response_type": "ephemeral",
+                    "text": f"""✅ *請求書取得完了*
+
+*作成したフォルダ:*{periods_info}
 
 • 処理したメール: {results['processed']}件
 • 保存した請求書: {results['saved']}件
 {invoice_list if invoice_list else ''}
 
-Google Driveに保存されました。"""
+Google Driveに保存されました。
+次にCSVファイルをアップロードしてください。"""
+                })
+        else:
+            # 期間指定なし（過去30日）
+            respond({
+                "response_type": "ephemeral",
+                "text": "📥 過去30日のメールから請求書を取得中..."
             })
+
+            results = invoice_fetcher.fetch_invoices(days_back=30)
+
+            if results["errors"]:
+                error_text = "\n".join(results["errors"][:3])
+                respond({
+                    "response_type": "ephemeral",
+                    "text": f"""⚠️ *請求書取得完了（エラーあり）*
+
+• 処理したメール: {results['processed']}件
+• 保存した請求書: {results['saved']}件
+
+*エラー:*
+{error_text}
+
+💡 期間指定: `/accounting-fetch-invoices 202602` または `202509~202601`"""
+                })
+            else:
+                invoice_list = ""
+                for inv in results["invoices"][:5]:
+                    invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
+
+                respond({
+                    "response_type": "ephemeral",
+                    "text": f"""✅ *請求書取得完了*
+
+• 処理したメール: {results['processed']}件
+• 保存した請求書: {results['saved']}件
+{invoice_list if invoice_list else ''}
+
+💡 期間指定: `/accounting-fetch-invoices 202602` または `202509~202601`"""
+                })
 
     except Exception as e:
         respond({
             "response_type": "ephemeral",
-            "text": f"❌ エラー: {str(e)}\n\nGmail APIの設定を確認してください。"
+            "text": f"❌ エラー: {str(e)}\n\n期間形式: `202602` または `202509~202601`"
         })
 
 
@@ -427,32 +487,65 @@ def handle_file_shared(event, client, say):
         file_type = file_data.get("filetype", "")
 
         if file_type == "csv" or file_name.endswith(".csv"):
+            # CSVファイルの種類を選択させる
             say(
                 channel=channel_id,
-                text=f"📄 CSV ファイル `{file_name}` を検出しました。\n照会処理を開始します..."
-            )
-            # TODO: CSV照会処理を実装
-            say(
-                channel=channel_id,
-                text="✅ 照会機能は現在開発中です。"
-            )
-        elif file_type == "pdf" or file_name.endswith(".pdf"):
-            say(
-                channel=channel_id,
-                text=f"📎 PDF ファイル `{file_name}` を検出しました。\n請求書として保存しますか？",
+                text=f"📄 CSV ファイル `{file_name}` を検出しました。",
                 blocks=[
                     {
                         "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"📎 PDF ファイル `{file_name}` を検出しました。"}
+                        "text": {"type": "mrkdwn", "text": f"📄 CSV ファイル `{file_name}` を検出しました。\nCSVの種類を選択してください。"}
                     },
                     {
                         "type": "actions",
                         "elements": [
                             {
                                 "type": "button",
-                                "text": {"type": "plain_text", "text": "請求書として保存"},
+                                "text": {"type": "plain_text", "text": "Saisonカード"},
                                 "style": "primary",
-                                "action_id": "save_invoice_pdf",
+                                "action_id": "process_csv_saison",
+                                "value": file_id
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "銀行口座"},
+                                "action_id": "process_csv_bank",
+                                "value": file_id
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "スキップ"},
+                                "action_id": "skip_file",
+                                "value": file_id
+                            }
+                        ]
+                    }
+                ]
+            )
+        elif file_type == "pdf" or file_name.endswith(".pdf"):
+            # PDFは種類（クレジット/銀行）を選択
+            say(
+                channel=channel_id,
+                text=f"📎 PDF ファイル `{file_name}` を検出しました。",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": f"📎 PDF ファイル `{file_name}` を検出しました。\n保存先を選択してください。"}
+                    },
+                    {
+                        "type": "actions",
+                        "elements": [
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "クレジット請求書"},
+                                "style": "primary",
+                                "action_id": "save_invoice_credit",
+                                "value": file_id
+                            },
+                            {
+                                "type": "button",
+                                "text": {"type": "plain_text", "text": "銀行振込請求書"},
+                                "action_id": "save_invoice_bank",
                                 "value": file_id
                             },
                             {
@@ -469,19 +562,137 @@ def handle_file_shared(event, client, say):
         print(f"Error handling file: {e}")
 
 
-@slack_app.action("save_invoice_pdf")
-def handle_save_invoice_pdf(ack, body, client):
-    """PDFを請求書として保存"""
+@slack_app.action("process_csv_saison")
+def handle_process_csv_saison(ack, body, client):
+    """SaisonカードCSVを処理"""
     ack()
+    _process_csv(body, client, "saison")
+
+
+@slack_app.action("process_csv_bank")
+def handle_process_csv_bank(ack, body, client):
+    """銀行CSVを処理"""
+    ack()
+    _process_csv(body, client, "bank")
+
+
+def _process_csv(body, client, csv_type: str):
+    """CSV処理の共通ロジック"""
+    import requests
 
     file_id = body["actions"][0]["value"]
-    user_id = body["user"]["id"]
     channel_id = body["channel"]["id"]
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher
-        import requests
+
+        # ファイル情報を取得
+        file_info = client.files_info(file=file_id)
+        file_data = file_info["file"]
+        file_name = file_data.get("name", "")
+        download_url = file_data.get("url_private_download")
+
+        # ファイルをダウンロード
+        headers = {"Authorization": f"Bearer {os.environ.get('SLACK_BOT_TOKEN')}"}
+        response = requests.get(download_url, headers=headers)
+
+        if response.status_code != 200:
+            raise Exception("ファイルのダウンロードに失敗しました")
+
+        # CSVをパース
+        csv_content = response.content.decode("utf-8", errors="ignore")
+
+        if csv_type == "saison":
+            transactions = invoice_fetcher.parse_saison_csv(csv_content)
+            type_name = "Saisonカード"
+        else:
+            transactions = invoice_fetcher.parse_bank_csv(csv_content)
+            type_name = "銀行口座"
+
+        if not transactions:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"⚠️ `{file_name}` から取引を検出できませんでした。CSVフォーマットを確認してください。"
+            )
+            return
+
+        # Spreadsheetに保存 (csv_transactions シート)
         from datetime import datetime
+        rows = []
+        for tx in transactions:
+            rows.append([
+                datetime.now().isoformat(),
+                csv_type,
+                tx.get("date", ""),
+                tx.get("vendor", ""),
+                str(tx.get("amount", 0)),
+                file_name
+            ])
+
+        invoice_fetcher.sheets.spreadsheets().values().append(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="csv_transactions!A:F",
+            valueInputOption="USER_ENTERED",
+            body={"values": rows}
+        ).execute()
+
+        # サマリーを表示
+        total = sum(tx.get("amount", 0) for tx in transactions)
+        vendor_list = "\n".join([f"• {tx['vendor']}: ¥{tx['amount']:,}" for tx in transactions[:10]])
+
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"""✅ *{type_name}CSV処理完了*
+
+• ファイル: `{file_name}`
+• 取引件数: {len(transactions)}件
+• 合計金額: ¥{total:,}
+
+*取引一覧（最大10件）:*
+{vendor_list}
+{"..." if len(transactions) > 10 else ""}
+
+`/accounting-reconcile 期間` で照会できます。"""
+        )
+
+    except Exception as e:
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"❌ CSV処理エラー: {str(e)}"
+        )
+
+
+@slack_app.action("save_invoice_credit")
+def handle_save_invoice_credit(ack, body, client):
+    """クレジット請求書として保存"""
+    ack()
+    _save_invoice_pdf(body, client, "credit")
+
+
+@slack_app.action("save_invoice_bank")
+def handle_save_invoice_bank(ack, body, client):
+    """銀行振込請求書として保存"""
+    ack()
+    _save_invoice_pdf(body, client, "bank")
+
+
+@slack_app.action("save_invoice_pdf")
+def handle_save_invoice_pdf(ack, body, client):
+    """PDFを請求書として保存（後方互換）"""
+    ack()
+    _save_invoice_pdf(body, client, "credit")
+
+
+def _save_invoice_pdf(body, client, invoice_type: str):
+    """PDF保存の共通ロジック"""
+    import requests
+    from datetime import datetime
+
+    file_id = body["actions"][0]["value"]
+    channel_id = body["channel"]["id"]
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
 
         # ファイル情報を取得
         file_info = client.files_info(file=file_id)
@@ -498,30 +709,34 @@ def handle_save_invoice_pdf(ack, body, client):
 
         # 期間を計算
         now = datetime.now()
-        period = f"{now.year}年{now.month}月"
+        period_code = f"{now.year}{now.month:02d}"
 
         # Google Driveに保存
         drive_result = invoice_fetcher.save_to_drive(
             response.content,
             file_name,
-            period
+            period_code,
+            invoice_type=invoice_type
         )
 
         # Spreadsheetに記録
+        type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
         invoice_data = {
             "id": f"manual_{now.timestamp()}",
             "vendor": "手動アップロード",
             "amount": "",
             "date": now.strftime("%Y-%m-%d"),
+            "period": period_code,
             "source": "slack_upload",
             "drive_url": drive_result["web_view_link"],
+            "type": invoice_type,
             "status": "pending"
         }
         invoice_fetcher.record_invoice(invoice_data)
 
         client.chat_postMessage(
             channel=channel_id,
-            text=f"✅ 請求書を保存しました！\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            text=f"✅ {type_name}請求書を保存しました！\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
         )
 
     except Exception as e:
@@ -542,6 +757,91 @@ def handle_skip_file(ack, body, client):
         text="ファイルをスキップしました。",
         blocks=[]
     )
+
+
+@slack_app.command("/accounting-reconcile")
+def handle_reconcile(ack, respond, body):
+    """CSV照会を実行"""
+    ack()
+
+    text = body.get("text", "").strip()
+
+    if not text:
+        respond({
+            "response_type": "ephemeral",
+            "text": "❌ 期間を指定してください。\n例: `/accounting-reconcile 202602`"
+        })
+        return
+
+    respond({
+        "response_type": "ephemeral",
+        "text": f"🔍 期間 `{text}` の照会を実行中..."
+    })
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        # CSV取引を取得
+        result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="csv_transactions!A2:F1000"
+        ).execute()
+
+        rows = result.get("values", [])
+        transactions = []
+
+        for row in rows:
+            if len(row) >= 5:
+                transactions.append({
+                    "type": row[1] if len(row) > 1 else "",
+                    "date": row[2] if len(row) > 2 else "",
+                    "vendor": row[3] if len(row) > 3 else "",
+                    "amount": int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
+                })
+
+        if not transactions:
+            respond({
+                "response_type": "ephemeral",
+                "text": "⚠️ CSVデータがありません。先にCSVファイルをアップロードしてください。"
+            })
+            return
+
+        # 照会実行
+        reconcile_result = invoice_fetcher.reconcile_csv(transactions, text)
+
+        # 結果を表示
+        matched_count = reconcile_result["matched_count"]
+        missing_count = reconcile_result["missing_count"]
+        total = reconcile_result["total_transactions"]
+
+        missing_list = ""
+        for tx in reconcile_result["missing"][:15]:
+            missing_list += f"\n• {tx['vendor']}: ¥{tx['amount']:,}"
+
+        unregistered_list = ""
+        for tx in reconcile_result["unregistered_vendors"][:10]:
+            unregistered_list += f"\n• {tx['vendor']}"
+
+        respond({
+            "response_type": "ephemeral",
+            "text": f"""📊 *照会結果 ({text})*
+
+• 総取引数: {total}件
+• ✅ 一致: {matched_count}件
+• ❌ 不足: {missing_count}件
+
+{"*不足している請求書:*" + missing_list if missing_list else ""}
+
+{"*未登録のベンダー（ルール登録推奨）:*" + unregistered_list if unregistered_list else ""}
+
+不足分は `/accounting-add-email-rule` でルール追加するか、PDFを手動アップロードしてください。"""
+        })
+
+    except Exception as e:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"❌ 照会エラー: {str(e)}"
+        })
 
 
 # === Flask Routes ===
