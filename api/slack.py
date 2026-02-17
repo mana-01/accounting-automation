@@ -243,7 +243,14 @@ def handle_fetch_invoices(ack, respond, body, client):
                 text="🔄 処理を開始しました..."
             )
 
-            from api.services.invoice_fetcher import invoice_fetcher
+            try:
+                from api.services.invoice_fetcher import invoice_fetcher
+            except Exception as import_error:
+                client.chat_postMessage(
+                    channel=user_id,
+                    text=f"❌ インポートエラー: {str(import_error)}"
+                )
+                return
 
             # デバッグ: Gmail設定を確認
             if not invoice_fetcher.gmail_users:
