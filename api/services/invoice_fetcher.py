@@ -14,35 +14,92 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 
-def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
+def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
     """
-    PDFから金額を抽出する
-    Returns: 金額（円）またはNone
+    Gemini APIを使ってPDFから請求書データを構造化抽出する
+    Returns: {"amount": int|None, "vendor": str|None, "date": str|None, "summary": str|None}
+    """
+    try:
+        import google.generativeai as genai
+
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("GEMINI_API_KEY not set, falling back to regex extraction")
+            return _extract_amount_from_pdf_regex(pdf_data)
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        # PDFをbase64エンコードしてGeminiに送信
+        pdf_part = {
+            "mime_type": "application/pdf",
+            "data": pdf_data,
+        }
+
+        prompt = """この請求書PDFから以下の情報をJSON形式で抽出してください。
+必ず以下のJSON形式のみで回答してください。説明文は不要です。
+
+{
+  "amount": 請求金額（税込合計、整数、円単位、不明ならnull）,
+  "vendor": "請求元の会社名・サービス名（不明ならnull）",
+  "date": "請求日または発行日（YYYY-MM-DD形式、不明ならnull）",
+  "summary": "請求内容の簡潔な要約（20文字以内）"
+}"""
+
+        response = model.generate_content([prompt, pdf_part])
+        text = response.text.strip()
+
+        # JSON部分を抽出（```json ... ``` で囲まれている場合に対応）
+        if "```" in text:
+            text = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+            text = text.group(1) if text else "{}"
+
+        data = json.loads(text)
+
+        # 金額を整数に正規化
+        amount = data.get("amount")
+        if amount is not None:
+            try:
+                amount = int(str(amount).replace(",", "").replace("¥", "").replace("￥", ""))
+            except (ValueError, TypeError):
+                amount = None
+
+        return {
+            "amount": amount,
+            "vendor": data.get("vendor"),
+            "date": data.get("date"),
+            "summary": data.get("summary"),
+        }
+
+    except Exception as e:
+        print(f"Error extracting invoice data with Gemini: {e}")
+        # フォールバック: 正規表現ベースの抽出
+        return _extract_amount_from_pdf_regex(pdf_data)
+
+
+def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
+    """
+    正規表現ベースのフォールバック抽出（Gemini APIが使えない場合）
+    Returns: {"amount": int|None, "vendor": None, "date": None, "summary": None}
     """
     try:
         import pdfplumber
 
         with pdfplumber.open(BytesIO(pdf_data)) as pdf:
             text = ""
-            for page in pdf.pages[:3]:  # 最初の3ページのみ
+            for page in pdf.pages[:3]:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
 
         if not text:
-            return None
+            return {"amount": None, "vendor": None, "date": None, "summary": None}
 
-        # 金額パターンを探す（優先度順）
         patterns = [
-            # ご請求金額、お支払い金額などの後の金額
             r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            # Total, Amount due などの英語パターン
             r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*[¥￥$]?\s*([\d,]+)',
-            # 「合計」の後の金額
             r'合計[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            # ¥マーク付きの大きな金額（10,000円以上）
             r'[¥￥]\s*([\d,]{5,})',
-            # 「円」で終わる大きな金額
             r'([\d,]{5,})\s*円',
         ]
 
@@ -52,25 +109,30 @@ def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
             for match in matches:
                 try:
                     amount = int(match.replace(",", ""))
-                    # 妥当な金額範囲（100円〜10,000,000円）
                     if 100 <= amount <= 10000000:
                         amounts.append(amount)
                 except ValueError:
                     continue
 
+        amount = None
         if amounts:
-            # 最も頻出する金額、または最大の金額を返す
             from collections import Counter
             count = Counter(amounts)
             most_common = count.most_common(1)
             if most_common:
-                return most_common[0][0]
+                amount = most_common[0][0]
 
-        return None
+        return {"amount": amount, "vendor": None, "date": None, "summary": None}
 
     except Exception as e:
-        print(f"Error extracting amount from PDF: {e}")
-        return None
+        print(f"Error in regex PDF extraction: {e}")
+        return {"amount": None, "vendor": None, "date": None, "summary": None}
+
+
+def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
+    """後方互換: 金額のみ返す"""
+    result = extract_invoice_data_with_gemini(pdf_data)
+    return result.get("amount")
 
 
 def parse_period(period_str: str) -> list[dict]:
@@ -544,16 +606,19 @@ class InvoiceFetcher:
                                     period
                                 )
 
-                                # PDFから金額を抽出
-                                amount = extract_amount_from_pdf(att["data"])
+                                # Gemini APIで請求書データを抽出
+                                pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                amount = pdf_info.get("amount")
+                                vendor = pdf_info.get("vendor") or rule["name"]
 
                                 invoice_data = {
                                     "id": f"inv_{datetime.now().timestamp()}",
-                                    "vendor": rule["name"],
+                                    "vendor": vendor,
                                     "amount": str(amount) if amount else "",
-                                    "date": email_date,
+                                    "date": pdf_info.get("date") or email_date,
                                     "source": "email_attachment",
                                     "drive_url": drive_result["web_view_link"],
+                                    "summary": pdf_info.get("summary") or "",
                                     "status": "pending"
                                 }
                                 self.record_invoice(invoice_data)
@@ -644,17 +709,20 @@ class InvoiceFetcher:
                                         results["skipped"] += 1
                                         continue
 
-                                    # PDFから金額を抽出
-                                    amount = extract_amount_from_pdf(att["data"])
+                                    # Gemini APIで請求書データを抽出
+                                    pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                    amount = pdf_info.get("amount")
+                                    vendor = pdf_info.get("vendor") or rule["name"]
 
                                     invoice_data = {
                                         "id": f"inv_{datetime.now().timestamp()}",
-                                        "vendor": rule["name"],
+                                        "vendor": vendor,
                                         "amount": str(amount) if amount else "",
-                                        "date": email_date,
+                                        "date": pdf_info.get("date") or email_date,
                                         "period": period_code,
                                         "source": "email_attachment",
                                         "drive_url": drive_result["web_view_link"],
+                                        "summary": pdf_info.get("summary") or "",
                                         "type": "credit",
                                         "status": "pending"
                                     }

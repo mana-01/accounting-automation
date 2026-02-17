@@ -853,29 +853,34 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             invoice_type=invoice_type
         )
 
-        # PDFから金額を抽出
-        from api.services.invoice_fetcher import extract_amount_from_pdf
-        amount = extract_amount_from_pdf(response.content)
+        # Gemini APIで請求書データを抽出
+        from api.services.invoice_fetcher import extract_invoice_data_with_gemini
+        pdf_info = extract_invoice_data_with_gemini(response.content)
+        amount = pdf_info.get("amount")
+        vendor = pdf_info.get("vendor") or "手動アップロード"
 
         # Spreadsheetに記録
         type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
         invoice_data = {
             "id": f"manual_{now.timestamp()}",
-            "vendor": "手動アップロード",
+            "vendor": vendor,
             "amount": str(amount) if amount else "",
-            "date": now.strftime("%Y-%m-%d"),
+            "date": pdf_info.get("date") or now.strftime("%Y-%m-%d"),
             "period": period_code,
             "source": "slack_upload",
             "drive_url": drive_result["web_view_link"],
+            "summary": pdf_info.get("summary") or "",
             "type": invoice_type,
             "status": "pending"
         }
         invoice_fetcher.record_invoice(invoice_data)
 
         amount_text = f"\n💰 金額: ¥{amount:,}" if amount else ""
+        vendor_text = f"\n🏢 請求元: {vendor}" if vendor != "手動アップロード" else ""
+        summary_text = f"\n📝 内容: {pdf_info.get('summary')}" if pdf_info.get("summary") else ""
         client.chat_postMessage(
             channel=channel_id,
-            text=f"✅ {type_name}請求書を保存しました！{amount_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            text=f"✅ {type_name}請求書を保存しました！{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
         )
 
     except Exception as e:
