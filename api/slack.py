@@ -484,9 +484,85 @@ def handle_add_subscription(ack, respond):
 
 # === Slack Events ===
 
+def _send_file_buttons(client, channel_id: str, file_id: str, file_name: str, file_type: str):
+    """ファイル検出時にボタンを送信する共通関数"""
+    file_id_str = str(file_id)
+
+    if file_type == "csv" or file_name.endswith(".csv"):
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"📄 CSV ファイル `{file_name}` を検出しました。\nCSVの種類を選択してください。",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"📄 CSV ファイル `{file_name}` を検出しました。\nCSVの種類を選択してください。"}
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "Saisonカード"},
+                            "style": "primary",
+                            "action_id": "process_csv_saison",
+                            "value": file_id_str
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "銀行口座"},
+                            "action_id": "process_csv_bank",
+                            "value": file_id_str
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "スキップ"},
+                            "action_id": "skip_file",
+                            "value": file_id_str
+                        }
+                    ]
+                }
+            ]
+        )
+    elif file_type == "pdf" or file_name.endswith(".pdf"):
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"📎 PDF ファイル `{file_name}` を検出しました。\n保存先を選択してください。",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": f"📎 PDF ファイル `{file_name}` を検出しました。\n保存先を選択してください。"}
+                },
+                {
+                    "type": "actions",
+                    "elements": [
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "クレジット請求書"},
+                            "style": "primary",
+                            "action_id": "save_invoice_credit",
+                            "value": file_id_str
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "銀行振込請求書"},
+                            "action_id": "save_invoice_bank",
+                            "value": file_id_str
+                        },
+                        {
+                            "type": "button",
+                            "text": {"type": "plain_text", "text": "スキップ"},
+                            "action_id": "skip_file",
+                            "value": file_id_str
+                        }
+                    ]
+                }
+            ]
+        )
+
+
 @slack_app.event("file_shared")
 def handle_file_shared(event, client, say):
-    """ファイルアップロード時の処理"""
+    """ファイル共有イベント"""
     file_id = event.get("file_id")
     channel_id = event.get("channel_id")
     user_id = event.get("user_id")
@@ -499,7 +575,6 @@ def handle_file_shared(event, client, say):
         file_name = file_data.get("name", "")
         file_type = file_data.get("filetype", "")
 
-        # channel_idがイベントにない場合、ファイル情報から取得
         if not channel_id:
             channels = file_data.get("channels", [])
             if channels:
@@ -513,85 +588,50 @@ def handle_file_shared(event, client, say):
             print(f"No channel_id found for file {file_id}")
             return
 
-        # file_idを文字列に変換（ボタンのvalueは文字列必須）
-        file_id_str = str(file_id)
+        _send_file_buttons(client, channel_id, file_id, file_name, file_type)
 
-        if file_type == "csv" or file_name.endswith(".csv"):
-            # CSVファイルの種類を選択させる
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"📄 CSV ファイル `{file_name}` を検出しました。\nCSVの種類を選択してください。",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"📄 CSV ファイル `{file_name}` を検出しました。\nCSVの種類を選択してください。"}
-                    },
-                    {
-                        "type": "actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "Saisonカード"},
-                                "style": "primary",
-                                "action_id": "process_csv_saison",
-                                "value": file_id_str
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "銀行口座"},
-                                "action_id": "process_csv_bank",
-                                "value": file_id_str
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "スキップ"},
-                                "action_id": "skip_file",
-                                "value": file_id_str
-                            }
-                        ]
-                    }
-                ]
-            )
-        elif file_type == "pdf" or file_name.endswith(".pdf"):
-            # PDFは種類（クレジット/銀行）を選択
-            client.chat_postMessage(
-                channel=channel_id,
-                text=f"📎 PDF ファイル `{file_name}` を検出しました。\n保存先を選択してください。",
-                blocks=[
-                    {
-                        "type": "section",
-                        "text": {"type": "mrkdwn", "text": f"📎 PDF ファイル `{file_name}` を検出しました。\n保存先を選択してください。"}
-                    },
-                    {
-                        "type": "actions",
-                        "elements": [
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "クレジット請求書"},
-                                "style": "primary",
-                                "action_id": "save_invoice_credit",
-                                "value": file_id_str
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "銀行振込請求書"},
-                                "action_id": "save_invoice_bank",
-                                "value": file_id_str
-                            },
-                            {
-                                "type": "button",
-                                "text": {"type": "plain_text", "text": "スキップ"},
-                                "action_id": "skip_file",
-                                "value": file_id_str
-                            }
-                        ]
-                    }
-                ]
-            )
     except Exception as e:
         print(f"Error handling file_shared: {e}")
         import traceback
         traceback.print_exc()
+
+
+@slack_app.event("message")
+def handle_message(event, client):
+    """メッセージイベント（ファイルアップロード検知用）"""
+    # ファイル添付があるメッセージのみ処理
+    files = event.get("files")
+    if not files:
+        return
+
+    # Bot自身のメッセージは無視
+    if event.get("bot_id"):
+        return
+
+    channel_id = event.get("channel")
+    subtype = event.get("subtype", "")
+
+    print(f"message event with files: channel={channel_id}, subtype={subtype}, files={len(files)}")
+
+    for f in files:
+        file_id = f.get("id")
+        file_name = f.get("name", "")
+        file_type = f.get("filetype", "")
+
+        if not file_id:
+            continue
+
+        # CSV or PDF のみ処理
+        is_csv = file_type == "csv" or file_name.endswith(".csv")
+        is_pdf = file_type == "pdf" or file_name.endswith(".pdf")
+
+        if is_csv or is_pdf:
+            try:
+                _send_file_buttons(client, channel_id, file_id, file_name, file_type)
+            except Exception as e:
+                print(f"Error handling file in message: {e}")
+                import traceback
+                traceback.print_exc()
 
 
 @slack_app.action("process_csv_saison")
