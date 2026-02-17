@@ -14,6 +14,65 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 
+def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
+    """
+    PDFから金額を抽出する
+    Returns: 金額（円）またはNone
+    """
+    try:
+        import pdfplumber
+
+        with pdfplumber.open(BytesIO(pdf_data)) as pdf:
+            text = ""
+            for page in pdf.pages[:3]:  # 最初の3ページのみ
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n"
+
+        if not text:
+            return None
+
+        # 金額パターンを探す（優先度順）
+        patterns = [
+            # ご請求金額、お支払い金額などの後の金額
+            r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
+            # Total, Amount due などの英語パターン
+            r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*[¥￥$]?\s*([\d,]+)',
+            # 「合計」の後の金額
+            r'合計[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
+            # ¥マーク付きの大きな金額（10,000円以上）
+            r'[¥￥]\s*([\d,]{5,})',
+            # 「円」で終わる大きな金額
+            r'([\d,]{5,})\s*円',
+        ]
+
+        amounts = []
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    amount = int(match.replace(",", ""))
+                    # 妥当な金額範囲（100円〜10,000,000円）
+                    if 100 <= amount <= 10000000:
+                        amounts.append(amount)
+                except ValueError:
+                    continue
+
+        if amounts:
+            # 最も頻出する金額、または最大の金額を返す
+            from collections import Counter
+            count = Counter(amounts)
+            most_common = count.most_common(1)
+            if most_common:
+                return most_common[0][0]
+
+        return None
+
+    except Exception as e:
+        print(f"Error extracting amount from PDF: {e}")
+        return None
+
+
 def parse_period(period_str: str) -> list[dict]:
     """
     期間文字列をパースして月リストを返す
@@ -460,10 +519,13 @@ class InvoiceFetcher:
                                 period
                             )
 
+                            # PDFから金額を抽出
+                            amount = extract_amount_from_pdf(att["data"])
+
                             invoice_data = {
                                 "id": f"inv_{datetime.now().timestamp()}",
                                 "vendor": rule["name"],
-                                "amount": "",  # PDF解析で後で抽出
+                                "amount": str(amount) if amount else "",
                                 "date": email_date,
                                 "source": "email_attachment",
                                 "drive_url": drive_result["web_view_link"],
@@ -554,10 +616,13 @@ class InvoiceFetcher:
                                     results["skipped"] += 1
                                     continue
 
+                                # PDFから金額を抽出
+                                amount = extract_amount_from_pdf(att["data"])
+
                                 invoice_data = {
                                     "id": f"inv_{datetime.now().timestamp()}",
                                     "vendor": rule["name"],
-                                    "amount": "",
+                                    "amount": str(amount) if amount else "",
                                     "date": email_date,
                                     "period": period_code,
                                     "source": "email_attachment",

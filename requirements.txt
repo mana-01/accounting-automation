@@ -15,6 +15,9 @@ google-auth-httplib2>=0.1.1
 pandas>=2.0.0
 python-dateutil>=2.8.2
 
+# PDF processing
+pdfplumber>=0.10.0
+
 # Scheduling
 schedule>=1.2.0
 APScheduler>=3.10.0

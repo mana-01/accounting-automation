@@ -802,12 +802,16 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             invoice_type=invoice_type
         )
 
+        # PDFから金額を抽出
+        from api.services.invoice_fetcher import extract_amount_from_pdf
+        amount = extract_amount_from_pdf(response.content)
+
         # Spreadsheetに記録
         type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
         invoice_data = {
             "id": f"manual_{now.timestamp()}",
             "vendor": "手動アップロード",
-            "amount": "",
+            "amount": str(amount) if amount else "",
             "date": now.strftime("%Y-%m-%d"),
             "period": period_code,
             "source": "slack_upload",
@@ -817,9 +821,10 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         }
         invoice_fetcher.record_invoice(invoice_data)
 
+        amount_text = f"\n💰 金額: ¥{amount:,}" if amount else ""
         client.chat_postMessage(
             channel=channel_id,
-            text=f"✅ {type_name}請求書を保存しました！\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            text=f"✅ {type_name}請求書を保存しました！{amount_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
         )
 
     except Exception as e:
