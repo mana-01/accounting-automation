@@ -973,11 +973,11 @@ def handle_reconcile(ack, respond, body):
         credit_sorted = sorted(credit_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
 
         bank_list = ""
-        for name, data in bank_sorted[:10]:
+        for name, data in bank_sorted:
             bank_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
 
         credit_list = ""
-        for name, data in credit_sorted[:10]:
+        for name, data in credit_sorted:
             credit_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
 
         result_text = f"""📊 *照会結果 ({text})*
