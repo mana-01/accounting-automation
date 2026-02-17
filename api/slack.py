@@ -671,8 +671,18 @@ def _process_csv(body, client, csv_type: str):
         if response.status_code != 200:
             raise Exception("ファイルのダウンロードに失敗しました")
 
-        # CSVをパース
-        csv_content = response.content.decode("utf-8", errors="ignore")
+        # CSVをパース（日本の銀行CSVはShift-JIS、SaisonはUTF-8が多い）
+        # 複数のエンコーディングを試す
+        csv_content = None
+        for encoding in ["cp932", "utf-8", "utf-8-sig", "shift_jis"]:
+            try:
+                csv_content = response.content.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if csv_content is None:
+            csv_content = response.content.decode("utf-8", errors="replace")
 
         if csv_type == "saison":
             transactions = invoice_fetcher.parse_saison_csv(csv_content)
