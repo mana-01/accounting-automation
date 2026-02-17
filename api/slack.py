@@ -35,6 +35,7 @@ def handle_help(ack, respond):
 • `/accounting-status` - 今月の経理状況を確認
 • `/accounting-fetch-invoices` - メールから請求書を自動取得
 • `/accounting-add-email-rule` - メール取得ルールを追加
+• `/accounting-email-rules` - ルール一覧・削除
 • `/accounting-invoices` - 取得済み請求書一覧
 
 *使い方:*
@@ -298,13 +299,106 @@ def handle_invoices(ack, respond):
         })
 
 
+@slack_app.command("/accounting-email-rules")
+def handle_email_rules(ack, respond):
+    """メール取得ルール一覧"""
+    ack()
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="email_rules!A2:E100"
+        ).execute()
+
+        rows = result.get("values", [])
+
+        if not rows:
+            respond({
+                "response_type": "ephemeral",
+                "text": "📧 *メール取得ルール一覧*\n\nルールがありません。`/accounting-add-email-rule` で追加してください。"
+            })
+            return
+
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "📧 *メール取得ルール一覧*"}
+            },
+            {"type": "divider"}
+        ]
+
+        for i, row in enumerate(rows):
+            name = row[0] if len(row) > 0 else "不明"
+            sender = row[1] if len(row) > 1 else "-"
+            subject = row[2] if len(row) > 2 else "-"
+            fetch_type = row[3] if len(row) > 3 else "attachment"
+            type_text = "PDF添付" if fetch_type == "attachment" else "リンク"
+
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*{name}*\n送信者: `{sender}`\n件名: `{subject}`\nタイプ: {type_text}"
+                },
+                "accessory": {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "削除"},
+                    "style": "danger",
+                    "action_id": "delete_email_rule",
+                    "value": str(i + 2)  # 行番号（ヘッダー分+1、0始まり分+1）
+                }
+            })
+
+        respond({
+            "response_type": "ephemeral",
+            "blocks": blocks
+        })
+
+    except Exception as e:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"❌ エラー: {str(e)}"
+        })
+
+
+@slack_app.action("delete_email_rule")
+def handle_delete_email_rule(ack, body, client):
+    """メール取得ルールを削除"""
+    ack()
+
+    row_num = body["actions"][0]["value"]
+    user_id = body["user"]["id"]
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        # 該当行をクリア
+        invoice_fetcher.sheets.spreadsheets().values().clear(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range=f"email_rules!A{row_num}:E{row_num}"
+        ).execute()
+
+        client.chat_postMessage(
+            channel=user_id,
+            text="✅ ルールを削除しました。`/accounting-email-rules` で確認してください。"
+        )
+
+    except Exception as e:
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"❌ 削除エラー: {str(e)}"
+        )
+
+
 @slack_app.command("/accounting-subscriptions")
 def handle_subscriptions(ack, respond):
     """サブスク一覧（使わないが互換性のため残す）"""
     ack()
     respond({
         "response_type": "ephemeral",
-        "text": "📋 この機能は `/accounting-add-email-rule` に置き換えられました。"
+        "text": "📋 この機能は `/accounting-email-rules` に置き換えられました。"
     })
 
 
