@@ -873,9 +873,8 @@ def handle_reconcile(ack, respond, body):
         periods = parse_period(text)
         target_months = set()
         for p in periods:
-            # YYYYMM形式（ハイフンなし）とYYYY-MM形式の両方に対応
+            # YYYYMM形式に統一
             target_months.add(f"{p['year']}{p['month']:02d}")  # 202509
-            target_months.add(f"{p['year']}-{p['month']:02d}")  # 2025-09
 
         # CSV取引を取得
         result = invoice_fetcher.sheets.spreadsheets().values().get(
@@ -891,14 +890,20 @@ def handle_reconcile(ack, respond, body):
                 tx_date = row[2] if len(row) > 2 else ""
 
                 # 日付形式を判定してYYYYMM or YYYY-MMを抽出
+                tx_month = ""
                 if len(tx_date) >= 8 and tx_date[:8].isdigit():
                     # YYYYMMDD形式 (20250915)
                     tx_month = tx_date[:6]  # 202509
-                elif len(tx_date) >= 7 and "-" in tx_date:
+                elif "/" in tx_date and len(tx_date) >= 7:
+                    # YYYY/MM/DD形式 (2025/09/15)
+                    parts = tx_date.split("/")
+                    if len(parts) >= 2:
+                        tx_month = f"{parts[0]}{parts[1]}"  # 202509
+                elif "-" in tx_date and len(tx_date) >= 7:
                     # YYYY-MM-DD形式 (2025-09-15)
-                    tx_month = tx_date[:7]  # 2025-09
-                else:
-                    tx_month = ""
+                    parts = tx_date.split("-")
+                    if len(parts) >= 2:
+                        tx_month = f"{parts[0]}{parts[1]}"  # 202509
 
                 if tx_month in target_months:
                     transactions.append({
