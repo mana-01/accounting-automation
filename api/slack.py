@@ -224,12 +224,12 @@ def handle_fetch_invoices(ack, respond, body, client):
     if text:
         respond({
             "response_type": "ephemeral",
-            "text": f"📥 期間 `{text}` の請求書を取得中...\nフォルダを作成しています...\n完了したらお知らせします。"
+            "text": f"📥 期間 `{text}` の請求書を取得中...\nメールを検索してPDFを保存しています。\n完了したらお知らせします（数分かかる場合があります）。"
         })
     else:
         respond({
             "response_type": "ephemeral",
-            "text": "📥 過去30日のメールから請求書を取得中...\n完了したらお知らせします。"
+            "text": "📥 過去30日のメールから請求書を取得中...\n完了したらお知らせします（数分かかる場合があります）。"
         })
 
     # 非同期で処理を実行
