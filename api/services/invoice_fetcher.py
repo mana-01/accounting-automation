@@ -54,7 +54,9 @@ class InvoiceFetcher:
             creds = get_google_credentials([
                 "https://www.googleapis.com/auth/drive"
             ])
-            self._drive = build("drive", "v3", credentials=creds)
+            # ユーザーとして操作（ドメイン全体の委任）
+            delegated = creds.with_subject(self.gmail_user)
+            self._drive = build("drive", "v3", credentials=delegated)
         return self._drive
 
     @property
