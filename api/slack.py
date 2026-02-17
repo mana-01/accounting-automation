@@ -211,35 +211,45 @@ def handle_add_email_rule_submission(ack, body, client, view):
 
 
 @slack_app.command("/accounting-fetch-invoices")
-def handle_fetch_invoices(ack, respond, body):
+def handle_fetch_invoices(ack, respond, body, client):
     """メールから請求書を自動取得"""
     ack()
 
     # 引数から期間を取得
     text = body.get("text", "").strip()
+    user_id = body.get("user_id")
 
-    try:
-        from api.services.invoice_fetcher import invoice_fetcher
+    # 即座に応答（タイムアウト防止）
+    if text:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"📥 期間 `{text}` の請求書を取得中...\nフォルダを作成しています...\n完了したらお知らせします。"
+        })
+    else:
+        respond({
+            "response_type": "ephemeral",
+            "text": "📥 過去30日のメールから請求書を取得中...\n完了したらお知らせします。"
+        })
 
-        if text:
-            # 期間指定あり
-            respond({
-                "response_type": "ephemeral",
-                "text": f"📥 期間 `{text}` の請求書を取得中...\nフォルダを作成しています..."
-            })
+    # 非同期で処理を実行
+    import threading
 
-            results = invoice_fetcher.fetch_invoices_by_period(text)
+    def process_invoices():
+        try:
+            from api.services.invoice_fetcher import invoice_fetcher
 
-            # 作成したフォルダ情報
-            periods_info = ""
-            for p in results.get("periods_created", [])[:5]:
-                periods_info += f"\n• {p['period']}"
+            if text:
+                results = invoice_fetcher.fetch_invoices_by_period(text)
 
-            if results["errors"]:
-                error_text = "\n".join(results["errors"][:3])
-                respond({
-                    "response_type": "ephemeral",
-                    "text": f"""⚠️ *請求書取得完了（エラーあり）*
+                periods_info = ""
+                for p in results.get("periods_created", [])[:5]:
+                    periods_info += f"\n• {p['period']}"
+
+                if results["errors"]:
+                    error_text = "\n".join(results["errors"][:3])
+                    client.chat_postMessage(
+                        channel=user_id,
+                        text=f"""⚠️ *請求書取得完了（エラーあり）*
 
 *作成したフォルダ:*{periods_info}
 
@@ -248,15 +258,15 @@ def handle_fetch_invoices(ack, respond, body):
 
 *エラー:*
 {error_text}"""
-                })
-            else:
-                invoice_list = ""
-                for inv in results["invoices"][:5]:
-                    invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
+                    )
+                else:
+                    invoice_list = ""
+                    for inv in results["invoices"][:5]:
+                        invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
 
-                respond({
-                    "response_type": "ephemeral",
-                    "text": f"""✅ *請求書取得完了*
+                    client.chat_postMessage(
+                        channel=user_id,
+                        text=f"""✅ *請求書取得完了*
 
 *作成したフォルダ:*{periods_info}
 
@@ -266,21 +276,15 @@ def handle_fetch_invoices(ack, respond, body):
 
 Google Driveに保存されました。
 次にCSVファイルをアップロードしてください。"""
-                })
-        else:
-            # 期間指定なし（過去30日）
-            respond({
-                "response_type": "ephemeral",
-                "text": "📥 過去30日のメールから請求書を取得中..."
-            })
+                    )
+            else:
+                results = invoice_fetcher.fetch_invoices(days_back=30)
 
-            results = invoice_fetcher.fetch_invoices(days_back=30)
-
-            if results["errors"]:
-                error_text = "\n".join(results["errors"][:3])
-                respond({
-                    "response_type": "ephemeral",
-                    "text": f"""⚠️ *請求書取得完了（エラーあり）*
+                if results["errors"]:
+                    error_text = "\n".join(results["errors"][:3])
+                    client.chat_postMessage(
+                        channel=user_id,
+                        text=f"""⚠️ *請求書取得完了（エラーあり）*
 
 • 処理したメール: {results['processed']}件
 • 保存した請求書: {results['saved']}件
@@ -289,28 +293,31 @@ Google Driveに保存されました。
 {error_text}
 
 💡 期間指定: `/accounting-fetch-invoices 202602` または `202509~202601`"""
-                })
-            else:
-                invoice_list = ""
-                for inv in results["invoices"][:5]:
-                    invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
+                    )
+                else:
+                    invoice_list = ""
+                    for inv in results["invoices"][:5]:
+                        invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
 
-                respond({
-                    "response_type": "ephemeral",
-                    "text": f"""✅ *請求書取得完了*
+                    client.chat_postMessage(
+                        channel=user_id,
+                        text=f"""✅ *請求書取得完了*
 
 • 処理したメール: {results['processed']}件
 • 保存した請求書: {results['saved']}件
 {invoice_list if invoice_list else ''}
 
 💡 期間指定: `/accounting-fetch-invoices 202602` または `202509~202601`"""
-                })
+                    )
 
-    except Exception as e:
-        respond({
-            "response_type": "ephemeral",
-            "text": f"❌ エラー: {str(e)}\n\n期間形式: `202602` または `202509~202601`"
-        })
+        except Exception as e:
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"❌ エラー: {str(e)}\n\n期間形式: `202602` または `202509~202601`"
+            )
+
+    thread = threading.Thread(target=process_invoices)
+    thread.start()
 
 
 @slack_app.command("/accounting-invoices")
