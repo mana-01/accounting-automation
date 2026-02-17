@@ -237,22 +237,23 @@ def handle_fetch_invoices(ack, respond, body, client):
 
     def process_invoices():
         try:
-            # デバッグ: 処理開始を通知
+            # Step 1: モジュールインポート
             client.chat_postMessage(
                 channel=user_id,
-                text="🔄 処理を開始しました..."
+                text="🔄 [1/4] モジュールを読み込み中..."
             )
 
             try:
                 from api.services.invoice_fetcher import invoice_fetcher
             except Exception as import_error:
+                import traceback
                 client.chat_postMessage(
                     channel=user_id,
-                    text=f"❌ インポートエラー: {str(import_error)}"
+                    text=f"❌ インポートエラー:\n```{traceback.format_exc()}```"
                 )
                 return
 
-            # デバッグ: Gmail設定を確認
+            # Step 2: 設定確認
             if not invoice_fetcher.gmail_users:
                 client.chat_postMessage(
                     channel=user_id,
@@ -262,7 +263,28 @@ def handle_fetch_invoices(ack, respond, body, client):
 
             client.chat_postMessage(
                 channel=user_id,
-                text=f"📧 検索対象アカウント: {', '.join(invoice_fetcher.gmail_users)}"
+                text=f"🔄 [2/4] 設定確認OK\n📧 検索対象: {', '.join(invoice_fetcher.gmail_users)}"
+            )
+
+            # Step 3: ルール取得
+            try:
+                rules = invoice_fetcher.get_email_rules()
+                client.chat_postMessage(
+                    channel=user_id,
+                    text=f"🔄 [3/4] メール取得ルール: {len(rules)}件取得"
+                )
+            except Exception as rule_error:
+                import traceback
+                client.chat_postMessage(
+                    channel=user_id,
+                    text=f"❌ ルール取得エラー:\n```{traceback.format_exc()}```"
+                )
+                return
+
+            # Step 4: 請求書取得
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"🔄 [4/4] メール検索・請求書保存中...\n（ルール{len(rules)}件 x アカウント{len(invoice_fetcher.gmail_users)}件）"
             )
 
             if text:
@@ -273,7 +295,7 @@ def handle_fetch_invoices(ack, respond, body, client):
                     periods_info += f"\n• {p['period']}"
 
                 if results["errors"]:
-                    error_text = "\n".join(results["errors"][:3])
+                    error_text = "\n".join(results["errors"][:10])
                     client.chat_postMessage(
                         channel=user_id,
                         text=f"""⚠️ *請求書取得完了（エラーあり）*
@@ -284,7 +306,7 @@ def handle_fetch_invoices(ack, respond, body, client):
 • 保存した請求書: {results['saved']}件
 • スキップ（重複）: {results.get('skipped', 0)}件
 
-*エラー:*
+*エラー ({len(results['errors'])}件):*
 {error_text}"""
                     )
                 else:
@@ -311,7 +333,7 @@ Google Driveに保存されました。
                 results = invoice_fetcher.fetch_invoices(days_back=30)
 
                 if results["errors"]:
-                    error_text = "\n".join(results["errors"][:3])
+                    error_text = "\n".join(results["errors"][:10])
                     client.chat_postMessage(
                         channel=user_id,
                         text=f"""⚠️ *請求書取得完了（エラーあり）*
@@ -319,7 +341,7 @@ Google Driveに保存されました。
 • 処理したメール: {results['processed']}件
 • 保存した請求書: {results['saved']}件
 
-*エラー:*
+*エラー ({len(results['errors'])}件):*
 {error_text}
 
 💡 期間指定: `/accounting-fetch-invoices 202602` または `202509~202601`"""
@@ -345,7 +367,7 @@ Google Driveに保存されました。
             error_detail = traceback.format_exc()
             client.chat_postMessage(
                 channel=user_id,
-                text=f"❌ エラー: {str(e)}\n\n```{error_detail[:500]}```"
+                text=f"❌ 予期しないエラー（Step不明）:\n`{type(e).__name__}: {e}`\n\n```{error_detail[:1500]}```"
             )
 
     thread = threading.Thread(target=process_invoices)
