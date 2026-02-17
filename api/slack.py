@@ -489,6 +489,9 @@ def handle_file_shared(event, client, say):
     """ファイルアップロード時の処理"""
     file_id = event.get("file_id")
     channel_id = event.get("channel_id")
+    user_id = event.get("user_id")
+
+    print(f"file_shared event: file_id={file_id}, channel_id={channel_id}, user_id={user_id}")
 
     try:
         file_info = client.files_info(file=file_id)
@@ -496,11 +499,28 @@ def handle_file_shared(event, client, say):
         file_name = file_data.get("name", "")
         file_type = file_data.get("filetype", "")
 
+        # channel_idがイベントにない場合、ファイル情報から取得
+        if not channel_id:
+            channels = file_data.get("channels", [])
+            if channels:
+                channel_id = channels[0]
+            elif file_data.get("ims"):
+                channel_id = file_data["ims"][0]
+            elif user_id:
+                channel_id = user_id
+
+        if not channel_id:
+            print(f"No channel_id found for file {file_id}")
+            return
+
+        # file_idを文字列に変換（ボタンのvalueは文字列必須）
+        file_id_str = str(file_id)
+
         if file_type == "csv" or file_name.endswith(".csv"):
             # CSVファイルの種類を選択させる
-            say(
+            client.chat_postMessage(
                 channel=channel_id,
-                text=f"📄 CSV ファイル `{file_name}` を検出しました。",
+                text=f"📄 CSV ファイル `{file_name}` を検出しました。\nCSVの種類を選択してください。",
                 blocks=[
                     {
                         "type": "section",
@@ -514,19 +534,19 @@ def handle_file_shared(event, client, say):
                                 "text": {"type": "plain_text", "text": "Saisonカード"},
                                 "style": "primary",
                                 "action_id": "process_csv_saison",
-                                "value": file_id
+                                "value": file_id_str
                             },
                             {
                                 "type": "button",
                                 "text": {"type": "plain_text", "text": "銀行口座"},
                                 "action_id": "process_csv_bank",
-                                "value": file_id
+                                "value": file_id_str
                             },
                             {
                                 "type": "button",
                                 "text": {"type": "plain_text", "text": "スキップ"},
                                 "action_id": "skip_file",
-                                "value": file_id
+                                "value": file_id_str
                             }
                         ]
                     }
@@ -534,9 +554,9 @@ def handle_file_shared(event, client, say):
             )
         elif file_type == "pdf" or file_name.endswith(".pdf"):
             # PDFは種類（クレジット/銀行）を選択
-            say(
+            client.chat_postMessage(
                 channel=channel_id,
-                text=f"📎 PDF ファイル `{file_name}` を検出しました。",
+                text=f"📎 PDF ファイル `{file_name}` を検出しました。\n保存先を選択してください。",
                 blocks=[
                     {
                         "type": "section",
@@ -550,26 +570,28 @@ def handle_file_shared(event, client, say):
                                 "text": {"type": "plain_text", "text": "クレジット請求書"},
                                 "style": "primary",
                                 "action_id": "save_invoice_credit",
-                                "value": file_id
+                                "value": file_id_str
                             },
                             {
                                 "type": "button",
                                 "text": {"type": "plain_text", "text": "銀行振込請求書"},
                                 "action_id": "save_invoice_bank",
-                                "value": file_id
+                                "value": file_id_str
                             },
                             {
                                 "type": "button",
                                 "text": {"type": "plain_text", "text": "スキップ"},
                                 "action_id": "skip_file",
-                                "value": file_id
+                                "value": file_id_str
                             }
                         ]
                     }
                 ]
             )
     except Exception as e:
-        print(f"Error handling file: {e}")
+        print(f"Error handling file_shared: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @slack_app.action("process_csv_saison")
