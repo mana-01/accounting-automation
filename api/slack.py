@@ -867,7 +867,13 @@ def handle_reconcile(ack, respond, body):
     })
 
     try:
-        from api.services.invoice_fetcher import invoice_fetcher
+        from api.services.invoice_fetcher import invoice_fetcher, parse_period
+
+        # 期間をパース
+        periods = parse_period(text)
+        target_months = set()
+        for p in periods:
+            target_months.add(f"{p['year']}-{p['month']:02d}")
 
         # CSV取引を取得
         result = invoice_fetcher.sheets.spreadsheets().values().get(
@@ -880,12 +886,17 @@ def handle_reconcile(ack, respond, body):
 
         for row in rows:
             if len(row) >= 5:
-                transactions.append({
-                    "type": row[1] if len(row) > 1 else "",
-                    "date": row[2] if len(row) > 2 else "",
-                    "vendor": row[3] if len(row) > 3 else "",
-                    "amount": int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
-                })
+                tx_date = row[2] if len(row) > 2 else ""
+                # 日付からYYYY-MMを抽出してフィルタリング
+                tx_month = tx_date[:7] if len(tx_date) >= 7 else ""
+
+                if tx_month in target_months:
+                    transactions.append({
+                        "type": row[1] if len(row) > 1 else "",
+                        "date": tx_date,
+                        "vendor": row[3] if len(row) > 3 else "",
+                        "amount": int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
+                    })
 
         if not transactions:
             respond({
