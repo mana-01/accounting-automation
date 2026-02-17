@@ -255,6 +255,7 @@ def handle_fetch_invoices(ack, respond, body, client):
 
 • 処理したメール: {results['processed']}件
 • 保存した請求書: {results['saved']}件
+• スキップ（重複）: {results.get('skipped', 0)}件
 
 *エラー:*
 {error_text}"""
@@ -264,6 +265,8 @@ def handle_fetch_invoices(ack, respond, body, client):
                     for inv in results["invoices"][:5]:
                         invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')})"
 
+                    skipped_info = f"\n• スキップ（重複）: {results.get('skipped', 0)}件" if results.get('skipped', 0) > 0 else ""
+
                     client.chat_postMessage(
                         channel=user_id,
                         text=f"""✅ *請求書取得完了*
@@ -271,7 +274,7 @@ def handle_fetch_invoices(ack, respond, body, client):
 *作成したフォルダ:*{periods_info}
 
 • 処理したメール: {results['processed']}件
-• 保存した請求書: {results['saved']}件
+• 保存した請求書: {results['saved']}件{skipped_info}
 {invoice_list if invoice_list else ''}
 
 Google Driveに保存されました。

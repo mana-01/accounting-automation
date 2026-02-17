@@ -277,6 +277,15 @@ class InvoiceFetcher:
         # サブフォルダを取得/作成
         folder_id = self._get_or_create_invoice_folder(period_code, invoice_type)
 
+        # 重複チェック: 同じファイル名が既に存在するか確認
+        existing = self._check_file_exists(filename, folder_id)
+        if existing:
+            return {
+                "file_id": existing["id"],
+                "web_view_link": existing.get("webViewLink", ""),
+                "skipped": True
+            }
+
         # ファイルをアップロード
         file_metadata = {
             "name": filename,
@@ -299,6 +308,25 @@ class InvoiceFetcher:
             "file_id": file.get("id"),
             "web_view_link": file.get("webViewLink")
         }
+
+    def _check_file_exists(self, filename: str, folder_id: str) -> Optional[dict]:
+        """フォルダ内に同名ファイルが存在するか確認"""
+        query = (
+            f"name='{filename}' and "
+            f"'{folder_id}' in parents and "
+            f"trashed=false"
+        )
+
+        results = self.drive.files().list(
+            q=query,
+            spaces="drive",
+            fields="files(id, name, webViewLink)"
+        ).execute()
+
+        files = results.get("files", [])
+        if files:
+            return files[0]
+        return None
 
     def _get_or_create_folder(self, name: str, parent_id: str) -> str:
         """フォルダを取得または作成"""
@@ -472,6 +500,7 @@ class InvoiceFetcher:
         results = {
             "processed": 0,
             "saved": 0,
+            "skipped": 0,
             "errors": [],
             "invoices": [],
             "periods_created": []
@@ -486,12 +515,16 @@ class InvoiceFetcher:
             year = p["year"]
             month = p["month"]
 
-            # 該当月の開始日と終了日
+            # 該当月の開始日と終了日（月末まで含む）
             start_date = f"{year}/{month:02d}/01"
+            # 翌月の1日をbefore条件にすることで月末まで含む
             if month == 12:
-                end_date = f"{year + 1}/01/01"
+                end_year = year + 1
+                end_month = 1
             else:
-                end_date = f"{year}/{month + 1:02d}/01"
+                end_year = year
+                end_month = month + 1
+            end_date = f"{end_year}/{end_month:02d}/01"
 
             for rule in rules:
                 try:
@@ -515,6 +548,11 @@ class InvoiceFetcher:
                                     period_code,
                                     invoice_type="credit"
                                 )
+
+                                # 重複の場合はスキップ
+                                if drive_result.get("skipped"):
+                                    results["skipped"] += 1
+                                    continue
 
                                 invoice_data = {
                                     "id": f"inv_{datetime.now().timestamp()}",
