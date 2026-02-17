@@ -237,7 +237,26 @@ def handle_fetch_invoices(ack, respond, body, client):
 
     def process_invoices():
         try:
+            # デバッグ: 処理開始を通知
+            client.chat_postMessage(
+                channel=user_id,
+                text="🔄 処理を開始しました..."
+            )
+
             from api.services.invoice_fetcher import invoice_fetcher
+
+            # デバッグ: Gmail設定を確認
+            if not invoice_fetcher.gmail_users:
+                client.chat_postMessage(
+                    channel=user_id,
+                    text="❌ エラー: Gmailアカウントが設定されていません。GMAIL_USER_EMAILS環境変数を確認してください。"
+                )
+                return
+
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"📧 検索対象アカウント: {', '.join(invoice_fetcher.gmail_users)}"
+            )
 
             if text:
                 results = invoice_fetcher.fetch_invoices_by_period(text)
@@ -315,12 +334,15 @@ Google Driveに保存されました。
                     )
 
         except Exception as e:
+            import traceback
+            error_detail = traceback.format_exc()
             client.chat_postMessage(
                 channel=user_id,
-                text=f"❌ エラー: {str(e)}\n\n期間形式: `202602` または `202509~202601`"
+                text=f"❌ エラー: {str(e)}\n\n```{error_detail[:500]}```"
             )
 
     thread = threading.Thread(target=process_invoices)
+    thread.daemon = False  # デーモンスレッドにしない
     thread.start()
 
 
