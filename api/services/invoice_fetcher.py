@@ -659,29 +659,41 @@ class InvoiceFetcher:
         return transactions
 
     def get_invoices_for_period(self, period_code: str) -> list[dict]:
-        """指定期間の請求書一覧を取得"""
+        """指定期間の請求書一覧を取得（日付ベースでフィルタリング）"""
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="invoices!A2:I1000"
+                range="invoices!A2:H1000"
             ).execute()
 
             rows = result.get("values", [])
             invoices = []
 
+            # 期間コードから対象月のリストを生成
+            periods = parse_period(period_code) if period_code else []
+            target_months = set()
+            for p in periods:
+                # YYYY-MM形式で対象月を追加
+                target_months.add(f"{p['year']}-{p['month']:02d}")
+
             for row in rows:
-                if len(row) >= 5:
-                    inv_period = row[4] if len(row) > 4 else ""
-                    if period_code in str(inv_period) or not period_code:
+                if len(row) >= 4:
+                    inv_date = row[3] if len(row) > 3 else ""
+
+                    # 日付からYYYY-MMを抽出
+                    inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
+
+                    # 期間指定がない場合は全件、ある場合は月が一致するもの
+                    if not period_code or inv_month in target_months:
                         invoices.append({
                             "id": row[0] if len(row) > 0 else "",
                             "vendor": row[1] if len(row) > 1 else "",
                             "amount": row[2] if len(row) > 2 else "",
-                            "date": row[3] if len(row) > 3 else "",
-                            "period": inv_period,
+                            "date": inv_date,
+                            "source": row[4] if len(row) > 4 else "",
                             "drive_url": row[5] if len(row) > 5 else "",
-                            "type": row[6] if len(row) > 6 else "credit",
-                            "status": row[7] if len(row) > 7 else "pending"
+                            "status": row[6] if len(row) > 6 else "pending",
+                            "type": "credit"
                         })
 
             return invoices
