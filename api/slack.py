@@ -20,6 +20,8 @@ slack_app = SlackApp(
 
 slack_handler = SlackRequestHandler(slack_app)
 
+print("[startup] Slack app initializing, registering handlers...")
+
 
 # === Slack Commands ===
 
@@ -367,10 +369,16 @@ def handle_fetch_invoices(ack, respond, body, client):
 @slack_app.command("/accounting-register-invoices")
 def handle_register_invoices(ack, respond, body, client):
     """Drive上の既存PDFをinvoicesシートに登録"""
+    import time as _time
+    _t0 = _time.time()
+    print(f"[register-invoices] START handler")
+
     ack()
+    print(f"[register-invoices] ack() done ({_time.time()-_t0:.3f}s)")
 
     text = body.get("text", "").strip()
     user_id = body.get("user_id")
+    print(f"[register-invoices] text={text!r}, user_id={user_id}")
 
     if not text:
         respond({
@@ -383,12 +391,21 @@ def handle_register_invoices(ack, respond, body, client):
         "response_type": "ephemeral",
         "text": f"🔍 期間 `{text}` のDriveフォルダを走査中...\n未登録のPDFをGemini解析してシートに登録します。"
     })
+    print(f"[register-invoices] respond() done ({_time.time()-_t0:.3f}s)")
 
     try:
+        print(f"[register-invoices] importing invoice_fetcher...")
         from api.services.invoice_fetcher import invoice_fetcher
+        print(f"[register-invoices] import OK ({_time.time()-_t0:.3f}s)")
 
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"🔄 Driveフォルダを走査中... (期間: {text})"
+        )
+
+        print(f"[register-invoices] calling register_from_drive({text!r})...")
         results = invoice_fetcher.register_from_drive(text)
-        print(f"[register-invoices] scanned={results['scanned']}, registered={results['registered']}, skipped={results['skipped']}, errors={len(results['errors'])}")
+        print(f"[register-invoices] done: scanned={results['scanned']}, registered={results['registered']}, skipped={results['skipped']}, errors={len(results['errors'])} ({_time.time()-_t0:.3f}s)")
 
         invoice_list = ""
         for inv in results.get("invoices", [])[:10]:
@@ -407,11 +424,17 @@ def handle_register_invoices(ack, respond, body, client):
 
     except Exception as e:
         import traceback
-        print(f"[register-invoices] ERROR: {traceback.format_exc()}")
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"❌ 登録エラー: {str(e)}"
-        )
+        error_detail = traceback.format_exc()
+        print(f"[register-invoices] ERROR: {error_detail}")
+        try:
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"❌ 登録エラー: `{type(e).__name__}: {e}`\n\n```{error_detail[:1500]}```"
+            )
+        except Exception as notify_err:
+            print(f"[register-invoices] Failed to notify user: {notify_err}")
+
+    print(f"[register-invoices] END handler ({_time.time()-_t0:.3f}s)")
 
 
 @slack_app.command("/accounting-invoices")
@@ -1106,6 +1129,9 @@ def handle_reconcile(ack, respond, body):
 
 
 # === Flask Routes ===
+
+print("[startup] All handlers registered successfully")
+
 
 @app.route("/", methods=["GET"])
 @app.route("/api/slack", methods=["GET"])

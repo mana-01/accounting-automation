@@ -33,6 +33,21 @@ features:
       should_escape: false
     - command: /accounting-fetch-invoices
       description: Fetch invoices from email automatically
+      usage_hint: "[YYYYMM]"
+      should_escape: false
+    - command: /accounting-add-email-rule
+      description: Add email fetch rule
+      should_escape: false
+    - command: /accounting-email-rules
+      description: List and manage email fetch rules
+      should_escape: false
+    - command: /accounting-register-invoices
+      description: Register Drive PDFs to invoice sheet
+      usage_hint: "YYYYMM or YYYYMM~YYYYMM"
+      should_escape: false
+    - command: /accounting-reconcile
+      description: Reconcile CSV transactions with invoices
+      usage_hint: "YYYYMM"
       should_escape: false
 oauth_config:
   scopes:

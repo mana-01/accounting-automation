@@ -774,6 +774,18 @@ class InvoiceFetcher:
 
         return results
 
+    def _download_file(self, file_id: str) -> bytes:
+        """Driveからファイルをダウンロードしてバイナリデータを返す"""
+        from googleapiclient.http import MediaIoBaseDownload
+
+        request = self.drive.files().get_media(fileId=file_id)
+        fh = BytesIO()
+        downloader = MediaIoBaseDownload(fh, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return fh.getvalue()
+
     def register_from_drive(self, period_str: str) -> dict:
         """
         指定期間のDriveフォルダ内の既存PDFを走査し、
@@ -787,6 +799,8 @@ class InvoiceFetcher:
             "errors": [],
             "invoices": []
         }
+
+        print(f"[register_from_drive] periods={[p['code'] for p in periods]}, drive_folder_id={self.drive_folder_id}")
 
         for p in periods:
             period_code = p["code"]
@@ -802,16 +816,19 @@ class InvoiceFetcher:
                     # 月フォルダを検索
                     month_folder_id = self._find_folder(month_folder_name, self.drive_folder_id)
                     if not month_folder_id:
+                        print(f"[register_from_drive] folder not found: {month_folder_name}")
                         continue
 
                     # サブフォルダを検索
                     sub_folder_id = self._find_folder(sub_folder_name, month_folder_id)
                     if not sub_folder_id:
+                        print(f"[register_from_drive] subfolder not found: {sub_folder_name}")
                         continue
 
                     # フォルダ内のPDFを一覧
                     pdf_files = self._list_pdfs_in_folder(sub_folder_id)
                     results["scanned"] += len(pdf_files)
+                    print(f"[register_from_drive] {sub_folder_name}: {len(pdf_files)} PDFs found")
 
                     for pdf_file in pdf_files:
                         drive_url = pdf_file.get("webViewLink", "")
@@ -819,18 +836,20 @@ class InvoiceFetcher:
                         # 既にinvoicesシートに登録済みならスキップ
                         if drive_url and self._is_invoice_registered(drive_url):
                             results["skipped"] += 1
+                            print(f"[register_from_drive] skip (registered): {pdf_file['name']}")
                             continue
 
                         try:
-                            # DriveからPDFデータをダウンロード
-                            pdf_data = self.drive.files().get_media(
-                                fileId=pdf_file["id"]
-                            ).execute()
+                            # DriveからPDFデータをダウンロード（MediaIoBaseDownload使用）
+                            print(f"[register_from_drive] downloading: {pdf_file['name']}")
+                            pdf_data = self._download_file(pdf_file["id"])
+                            print(f"[register_from_drive] downloaded {len(pdf_data)} bytes")
 
                             # Gemini解析
                             pdf_info = extract_invoice_data_with_gemini(pdf_data)
                             amount = pdf_info.get("amount")
                             vendor = pdf_info.get("vendor") or pdf_file["name"].split("_")[0]
+                            print(f"[register_from_drive] extracted: vendor={vendor}, amount={amount}, date={pdf_info.get('date')}")
 
                             invoice_data = {
                                 "id": f"inv_{datetime.now().timestamp()}",
@@ -844,16 +863,26 @@ class InvoiceFetcher:
                                 "type": invoice_type,
                                 "status": "pending"
                             }
-                            self.record_invoice(invoice_data)
-                            results["registered"] += 1
-                            results["invoices"].append(invoice_data)
+                            recorded = self.record_invoice(invoice_data)
+                            if recorded:
+                                results["registered"] += 1
+                                results["invoices"].append(invoice_data)
+                                print(f"[register_from_drive] registered: {vendor}")
+                            else:
+                                results["skipped"] += 1
+                                print(f"[register_from_drive] skip (duplicate url): {vendor}")
 
                         except Exception as e:
+                            import traceback
+                            print(f"[register_from_drive] ERROR processing {pdf_file['name']}: {traceback.format_exc()}")
                             results["errors"].append(f"{pdf_file['name']}: {str(e)}")
 
                 except Exception as e:
+                    import traceback
+                    print(f"[register_from_drive] ERROR folder {sub_folder_name}: {traceback.format_exc()}")
                     results["errors"].append(f"{sub_folder_name}: {str(e)}")
 
+        print(f"[register_from_drive] DONE: scanned={results['scanned']}, registered={results['registered']}, skipped={results['skipped']}, errors={len(results['errors'])}")
         return results
 
     def _find_folder(self, name: str, parent_id: str) -> Optional[str]:
