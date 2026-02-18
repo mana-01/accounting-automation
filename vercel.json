@@ -2,18 +2,17 @@
   "version": 2,
   "functions": {
     "api/slack.py": {
-      "runtime": "@vercel/python",
       "maxDuration": 300
     }
   },
   "rewrites": [
     {
       "source": "/api/slack",
-      "destination": "/api/slack.py"
+      "destination": "/api/slack"
     },
     {
       "source": "/(.*)",
-      "destination": "/api/slack.py"
+      "destination": "/api/slack"
     }
   ]
 }
