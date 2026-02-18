@@ -135,6 +135,67 @@ def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
     return result.get("amount")
 
 
+def _sanitize_for_filename(text: str) -> str:
+    """ファイル名に使えない文字を除去・置換する"""
+    if not text:
+        return "unknown"
+    # ファイルシステムで問題になる文字を除去
+    sanitized = re.sub(r'[\\/:*?"<>|]', '', text)
+    # 前後の空白を除去
+    sanitized = sanitized.strip()
+    return sanitized or "unknown"
+
+
+def format_invoice_filename(date: str, vendor: str, amount) -> str:
+    """
+    請求書ファイル名を命名ルールに従って生成する。
+    フォーマット: {請求日}_{請求元}_{金額}.pdf
+    例: 2026-02-01_AWS_15000.pdf
+    """
+    safe_date = date or "unknown-date"
+    safe_vendor = _sanitize_for_filename(vendor)
+    safe_amount = str(amount) if amount else "0"
+    return f"{safe_date}_{safe_vendor}_{safe_amount}.pdf"
+
+
+def parse_invoice_filename(filename: str) -> dict:
+    """
+    命名ルールに従ったファイル名からdate, vendor, amountを抽出する。
+    フォーマット: {請求日}_{請求元}_{金額}.pdf
+    パース戦略: 最初の要素=date, 最後の要素=amount, 中間=vendor
+    """
+    # 拡張子を除去
+    name = re.sub(r'\.pdf$', '', filename, flags=re.IGNORECASE)
+    parts = name.split("_")
+
+    if len(parts) < 3:
+        # 命名ルールに従っていないファイル名
+        return {"date": None, "vendor": filename, "amount": None}
+
+    date = parts[0]
+    amount_str = parts[-1]
+    vendor = "_".join(parts[1:-1])
+
+    # 金額をパース
+    amount = None
+    try:
+        parsed = int(amount_str.replace(",", ""))
+        if parsed > 0:
+            amount = parsed
+    except (ValueError, TypeError):
+        pass
+
+    # 日付の簡易バリデーション (YYYY-MM-DD)
+    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
+        date = None
+
+    return {
+        "date": date,
+        "vendor": vendor if vendor else None,
+        "amount": amount,
+    }
+
+
 def parse_period(period_str: str) -> list[dict]:
     """
     期間文字列をパースして月リストを返す
@@ -593,7 +654,8 @@ class InvoiceFetcher:
         """
         単一のPDFをGemini解析してinvoicesシートに登録する。
         Drive保存とは独立したtry/exceptで呼ぶこと。
-        戻り値: {"registered": bool, "invoice": dict|None, "error": str|None}
+        戻り値: {"registered": bool, "invoice": dict|None, "error": str|None,
+                 "gemini_data": dict|None (ファイル名生成用)}
         """
         try:
             pdf_info = extract_invoice_data_with_gemini(pdf_data)
@@ -614,10 +676,13 @@ class InvoiceFetcher:
             }
             recorded = self.record_invoice(invoice_data)
             if not recorded:
-                return {"registered": False, "invoice": None, "error": None, "duplicate": True}
-            return {"registered": True, "invoice": invoice_data, "error": None}
+                return {"registered": False, "invoice": None, "error": None,
+                        "duplicate": True, "gemini_data": pdf_info}
+            return {"registered": True, "invoice": invoice_data, "error": None,
+                    "gemini_data": pdf_info}
         except Exception as e:
-            return {"registered": False, "invoice": None, "error": str(e)}
+            return {"registered": False, "invoice": None, "error": str(e),
+                    "gemini_data": None}
 
     def fetch_invoices(self, days_back: int = 30) -> dict:
         """メールから請求書PDFを取得しDriveに保存、保存成功したら自動登録"""
@@ -650,7 +715,18 @@ class InvoiceFetcher:
                         if rule.get("fetch_type") == "attachment":
                             attachments = self.get_attachments(email)
                             for att in attachments:
-                                filename = f"{rule['name']}_{email_date}_{att['filename']}"
+                                # 先にGemini解析してファイル名を命名ルールで生成
+                                try:
+                                    pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                except Exception as gemini_err:
+                                    pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                    print(f"Gemini extraction failed: {gemini_err}")
+
+                                inv_date = pdf_info.get("date") or email_date
+                                inv_vendor = pdf_info.get("vendor") or rule["name"]
+                                inv_amount = pdf_info.get("amount")
+
+                                filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
                                 drive_result = self.save_to_drive(
                                     att["data"],
                                     filename,
@@ -663,17 +739,28 @@ class InvoiceFetcher:
 
                                 results["saved"] += 1
 
-                                # Drive保存成功 → 自動的にinvoice登録（独立したエラーハンドリング）
-                                reg = self._register_single_invoice(
-                                    att["data"], drive_result, rule["name"], email_date, period
-                                )
-                                if reg["registered"]:
-                                    results["registered"] += 1
-                                    results["invoices"].append(reg["invoice"])
-                                elif reg.get("duplicate"):
-                                    results["skipped"] += 1
-                                elif reg["error"]:
-                                    results["register_errors"].append(f"{filename}: {reg['error']}")
+                                # Drive保存成功 → シートに登録（Gemini結果を再利用）
+                                try:
+                                    invoice_data = {
+                                        "id": f"inv_{datetime.now().timestamp()}",
+                                        "vendor": inv_vendor,
+                                        "amount": str(inv_amount) if inv_amount else "",
+                                        "date": inv_date,
+                                        "period": period,
+                                        "source": "email_attachment",
+                                        "drive_url": drive_result["web_view_link"],
+                                        "summary": pdf_info.get("summary") or "",
+                                        "type": "credit",
+                                        "status": "pending"
+                                    }
+                                    recorded = self.record_invoice(invoice_data)
+                                    if recorded:
+                                        results["registered"] += 1
+                                        results["invoices"].append(invoice_data)
+                                    else:
+                                        results["skipped"] += 1
+                                except Exception as reg_err:
+                                    results["register_errors"].append(f"{filename}: {reg_err}")
 
                         elif rule.get("fetch_type") == "link":
                             links = self.extract_links(email, rule.get("link_pattern"))
@@ -743,7 +830,18 @@ class InvoiceFetcher:
                             if rule.get("fetch_type") == "attachment":
                                 attachments = self.get_attachments(email)
                                 for att in attachments:
-                                    filename = f"{rule['name']}_{email_date}_{att['filename']}"
+                                    # 先にGemini解析してファイル名を命名ルールで生成
+                                    try:
+                                        pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                    except Exception as gemini_err:
+                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                        print(f"Gemini extraction failed: {gemini_err}")
+
+                                    inv_date = pdf_info.get("date") or email_date
+                                    inv_vendor = pdf_info.get("vendor") or rule["name"]
+                                    inv_amount = pdf_info.get("amount")
+
+                                    filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
                                     drive_result = self.save_to_drive(
                                         att["data"],
                                         filename,
@@ -757,17 +855,28 @@ class InvoiceFetcher:
 
                                     results["saved"] += 1
 
-                                    # Drive保存成功 → 自動的にinvoice登録
-                                    reg = self._register_single_invoice(
-                                        att["data"], drive_result, rule["name"], email_date, period_code
-                                    )
-                                    if reg["registered"]:
-                                        results["registered"] += 1
-                                        results["invoices"].append(reg["invoice"])
-                                    elif reg.get("duplicate"):
-                                        results["skipped"] += 1
-                                    elif reg["error"]:
-                                        results["register_errors"].append(f"{filename}: {reg['error']}")
+                                    # Drive保存成功 → シートに登録（Gemini結果を再利用）
+                                    try:
+                                        invoice_data = {
+                                            "id": f"inv_{datetime.now().timestamp()}",
+                                            "vendor": inv_vendor,
+                                            "amount": str(inv_amount) if inv_amount else "",
+                                            "date": inv_date,
+                                            "period": period_code,
+                                            "source": "email_attachment",
+                                            "drive_url": drive_result["web_view_link"],
+                                            "summary": pdf_info.get("summary") or "",
+                                            "type": "credit",
+                                            "status": "pending"
+                                        }
+                                        recorded = self.record_invoice(invoice_data)
+                                        if recorded:
+                                            results["registered"] += 1
+                                            results["invoices"].append(invoice_data)
+                                        else:
+                                            results["skipped"] += 1
+                                    except Exception as reg_err:
+                                        results["register_errors"].append(f"{filename}: {reg_err}")
 
                     except Exception as e:
                         results["errors"].append(f"{rule.get('name', 'unknown')} ({user_email}, {period_code}): {str(e)}")
@@ -777,7 +886,8 @@ class InvoiceFetcher:
     def register_from_drive(self, period_str: str) -> dict:
         """
         指定期間のDriveフォルダ内の既存PDFを走査し、
-        未登録のものをGemini解析してinvoicesシートに登録する。
+        ファイル名（{請求日}_{請求元}_{金額}.pdf）からデータを抽出してinvoicesシートに登録する。
+        Gemini解析は不要 — ファイル名がSingle Source of Truth。
         """
         periods = parse_period(period_str)
         results = {
@@ -822,25 +932,21 @@ class InvoiceFetcher:
                             continue
 
                         try:
-                            # DriveからPDFデータをダウンロード
-                            pdf_data = self.drive.files().get_media(
-                                fileId=pdf_file["id"]
-                            ).execute()
-
-                            # Gemini解析
-                            pdf_info = extract_invoice_data_with_gemini(pdf_data)
-                            amount = pdf_info.get("amount")
-                            vendor = pdf_info.get("vendor") or pdf_file["name"].split("_")[0]
+                            # ファイル名から請求データを抽出（Gemini不要）
+                            parsed = parse_invoice_filename(pdf_file["name"])
+                            vendor = parsed.get("vendor") or pdf_file["name"]
+                            amount = parsed.get("amount")
+                            inv_date = parsed.get("date") or ""
 
                             invoice_data = {
                                 "id": f"inv_{datetime.now().timestamp()}",
                                 "vendor": vendor,
                                 "amount": str(amount) if amount else "",
-                                "date": pdf_info.get("date") or "",
+                                "date": inv_date,
                                 "period": period_code,
                                 "source": "drive_scan",
                                 "drive_url": drive_url,
-                                "summary": pdf_info.get("summary") or "",
+                                "summary": "",
                                 "type": invoice_type,
                                 "status": "pending"
                             }

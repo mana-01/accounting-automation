@@ -798,7 +798,7 @@ def handle_save_invoice_pdf(ack, body, client):
 
 
 def _save_invoice_pdf(body, client, invoice_type: str):
-    """PDF保存の共通ロジック"""
+    """PDF保存の共通ロジック（Gemini解析→命名ルールでDrive保存→シート登録）"""
     import requests
     from datetime import datetime
 
@@ -806,12 +806,13 @@ def _save_invoice_pdf(body, client, invoice_type: str):
     channel_id = body["channel"]["id"]
 
     try:
-        from api.services.invoice_fetcher import invoice_fetcher
+        from api.services.invoice_fetcher import (
+            invoice_fetcher, extract_invoice_data_with_gemini, format_invoice_filename
+        )
 
         # ファイル情報を取得
         file_info = client.files_info(file=file_id)
         file_data = file_info["file"]
-        file_name = file_data.get("name", "invoice.pdf")
         download_url = file_data.get("url_private_download")
 
         # ファイルをダウンロード
@@ -821,23 +822,24 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         if response.status_code != 200:
             raise Exception("ファイルのダウンロードに失敗しました")
 
-        # 期間を計算
-        now = datetime.now()
-        period_code = f"{now.year}{now.month:02d}"
-
-        # Google Driveに保存
-        drive_result = invoice_fetcher.save_to_drive(
-            response.content,
-            file_name,
-            period_code,
-            invoice_type=invoice_type
-        )
-
         # Gemini APIで請求書データを抽出
-        from api.services.invoice_fetcher import extract_invoice_data_with_gemini
         pdf_info = extract_invoice_data_with_gemini(response.content)
         amount = pdf_info.get("amount")
         vendor = pdf_info.get("vendor") or "手動アップロード"
+        now = datetime.now()
+        inv_date = pdf_info.get("date") or now.strftime("%Y-%m-%d")
+
+        # 期間を計算
+        period_code = f"{now.year}{now.month:02d}"
+
+        # 命名ルールでファイル名を生成してGoogle Driveに保存
+        filename = format_invoice_filename(inv_date, vendor, amount)
+        drive_result = invoice_fetcher.save_to_drive(
+            response.content,
+            filename,
+            period_code,
+            invoice_type=invoice_type
+        )
 
         # Spreadsheetに記録
         type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
@@ -845,7 +847,7 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             "id": f"manual_{now.timestamp()}",
             "vendor": vendor,
             "amount": str(amount) if amount else "",
-            "date": pdf_info.get("date") or now.strftime("%Y-%m-%d"),
+            "date": inv_date,
             "period": period_code,
             "source": "slack_upload",
             "drive_url": drive_result["web_view_link"],
@@ -860,7 +862,7 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         summary_text = f"\n📝 内容: {pdf_info.get('summary')}" if pdf_info.get("summary") else ""
         client.chat_postMessage(
             channel=channel_id,
-            text=f"✅ {type_name}請求書を保存しました！{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
         )
 
     except Exception as e:
