@@ -588,12 +588,12 @@ class InvoiceFetcher:
                         email_date = self.get_message_date(email)
                         subject = self.get_message_subject(email)
 
-                        # 期間を計算（YYYY年M月形式）
+                        # 期間コードを計算（YYYYMM形式）
                         try:
                             dt = datetime.strptime(email_date, "%Y-%m-%d")
-                            period = f"{dt.year}年{dt.month}月"
+                            period = f"{dt.year}{dt.month:02d}"
                         except:
-                            period = datetime.now().strftime("%Y年%m月")
+                            period = datetime.now().strftime("%Y%m")
 
                         if rule.get("fetch_type") == "attachment":
                             # PDF添付ファイルを取得
