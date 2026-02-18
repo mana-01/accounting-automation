@@ -16,33 +16,33 @@ features:
   slash_commands:
     - command: /accounting-help
       description: Show help
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
     - command: /accounting-add-subscription
       description: Add email fetch rule
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
     - command: /accounting-subscriptions
       description: List and manage email fetch rules
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
     - command: /accounting-fetch-invoices
       description: Fetch invoices from email automatically
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       usage_hint: "[YYYYMM or YYYYMM~YYYYMM]"
       should_escape: false
     - command: /accounting-register-invoices
       description: Register Drive PDFs to spreadsheet
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       usage_hint: "[YYYYMM or YYYYMM~YYYYMM]"
       should_escape: false
     - command: /accounting-invoices
       description: List invoices
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
     - command: /accounting-reconcile
       description: Reconcile CSV transactions with invoices
-      url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+      url: https://accounting-automation-nine.vercel.app/api/slack
       usage_hint: "[YYYYMM]"
       should_escape: false
 oauth_config:
@@ -56,12 +56,12 @@ oauth_config:
       - users:read
 settings:
   event_subscriptions:
-    request_url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+    request_url: https://accounting-automation-nine.vercel.app/api/slack
     bot_events:
       - file_shared
   interactivity:
     is_enabled: true
-    request_url: https://YOUR_VERCEL_URL.vercel.app/api/slack
+    request_url: https://accounting-automation-nine.vercel.app/api/slack
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
