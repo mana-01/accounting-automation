@@ -17,22 +17,26 @@ features:
     - command: /accounting-help
       description: Show help
       should_escape: false
-    - command: /accounting-status
-      description: Show current month accounting status
-      usage_hint: "[YYYY-MM]"
+    - command: /accounting-add-subscription
+      description: Add email fetch rule
       should_escape: false
     - command: /accounting-subscriptions
-      description: List all subscriptions
-      should_escape: false
-    - command: /accounting-add-subscription
-      description: Register a new subscription
-      should_escape: false
-    - command: /accounting-invoices
-      description: List invoices
-      usage_hint: "[YYYY-MM]"
+      description: List and manage email fetch rules
       should_escape: false
     - command: /accounting-fetch-invoices
       description: Fetch invoices from email automatically
+      usage_hint: "[YYYYMM or YYYYMM~YYYYMM]"
+      should_escape: false
+    - command: /accounting-register-invoices
+      description: Register Drive PDFs to spreadsheet
+      usage_hint: "[YYYYMM or YYYYMM~YYYYMM]"
+      should_escape: false
+    - command: /accounting-invoices
+      description: List invoices
+      should_escape: false
+    - command: /accounting-reconcile
+      description: Reconcile CSV transactions with invoices
+      usage_hint: "[YYYYMM]"
       should_escape: false
 oauth_config:
   scopes:
