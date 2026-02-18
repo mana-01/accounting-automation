@@ -38,6 +38,7 @@ def handle_help(ack, respond):
 • `/accounting-add-email-rule` - メール取得ルールを追加
 • `/accounting-email-rules` - ルール一覧・削除
 • `/accounting-invoices` - 取得済み請求書一覧
+• `/accounting-register-invoices <期間>` - Drive上のPDFをシートに登録
 • `/accounting-reconcile [期間]` - CSV照会を実行
 
 *期間指定の例:*
@@ -361,6 +362,56 @@ def handle_fetch_invoices(ack, respond, body, client):
             print(f"[fetch-invoices] Failed to notify user: {notify_err}")
 
     print(f"[fetch-invoices] END handler ({_time.time()-_t0:.3f}s)")
+
+
+@slack_app.command("/accounting-register-invoices")
+def handle_register_invoices(ack, respond, body, client):
+    """Drive上の既存PDFをinvoicesシートに登録"""
+    ack()
+
+    text = body.get("text", "").strip()
+    user_id = body.get("user_id")
+
+    if not text:
+        respond({
+            "response_type": "ephemeral",
+            "text": "❌ 期間を指定してください。\n例: `/accounting-register-invoices 202509` または `202509~202602`"
+        })
+        return
+
+    respond({
+        "response_type": "ephemeral",
+        "text": f"🔍 期間 `{text}` のDriveフォルダを走査中...\n未登録のPDFをGemini解析してシートに登録します。"
+    })
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        results = invoice_fetcher.register_from_drive(text)
+        print(f"[register-invoices] scanned={results['scanned']}, registered={results['registered']}, skipped={results['skipped']}, errors={len(results['errors'])}")
+
+        invoice_list = ""
+        for inv in results.get("invoices", [])[:10]:
+            invoice_list += f"\n• {inv.get('vendor', '不明')} ({inv.get('date', '')}) ¥{inv.get('amount', '?')}"
+
+        summary = f"• スキャン: {results['scanned']}件\n• 新規登録: {results['registered']}件\n• スキップ（登録済み）: {results['skipped']}件"
+
+        if results["errors"]:
+            error_text = "\n".join(results["errors"][:5])
+            summary += f"\n\n⚠️ *エラー ({len(results['errors'])}件):*\n{error_text}"
+
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"✅ *Drive登録完了 ({text})*\n{summary}{invoice_list}"
+        )
+
+    except Exception as e:
+        import traceback
+        print(f"[register-invoices] ERROR: {traceback.format_exc()}")
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"❌ 登録エラー: {str(e)}"
+        )
 
 
 @slack_app.command("/accounting-invoices")

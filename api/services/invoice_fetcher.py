@@ -774,6 +774,116 @@ class InvoiceFetcher:
 
         return results
 
+    def register_from_drive(self, period_str: str) -> dict:
+        """
+        指定期間のDriveフォルダ内の既存PDFを走査し、
+        未登録のものをGemini解析してinvoicesシートに登録する。
+        """
+        periods = parse_period(period_str)
+        results = {
+            "scanned": 0,
+            "registered": 0,
+            "skipped": 0,
+            "errors": [],
+            "invoices": []
+        }
+
+        for p in periods:
+            period_code = p["code"]
+            year = p["year"]
+            month = p["month"]
+            month_folder_name = f"{year}年{month}月"
+
+            for invoice_type in ["credit", "bank"]:
+                type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
+                sub_folder_name = f"{period_code}_{type_name}"
+
+                try:
+                    # 月フォルダを検索
+                    month_folder_id = self._find_folder(month_folder_name, self.drive_folder_id)
+                    if not month_folder_id:
+                        continue
+
+                    # サブフォルダを検索
+                    sub_folder_id = self._find_folder(sub_folder_name, month_folder_id)
+                    if not sub_folder_id:
+                        continue
+
+                    # フォルダ内のPDFを一覧
+                    pdf_files = self._list_pdfs_in_folder(sub_folder_id)
+                    results["scanned"] += len(pdf_files)
+
+                    for pdf_file in pdf_files:
+                        drive_url = pdf_file.get("webViewLink", "")
+
+                        # 既にinvoicesシートに登録済みならスキップ
+                        if drive_url and self._is_invoice_registered(drive_url):
+                            results["skipped"] += 1
+                            continue
+
+                        try:
+                            # DriveからPDFデータをダウンロード
+                            pdf_data = self.drive.files().get_media(
+                                fileId=pdf_file["id"]
+                            ).execute()
+
+                            # Gemini解析
+                            pdf_info = extract_invoice_data_with_gemini(pdf_data)
+                            amount = pdf_info.get("amount")
+                            vendor = pdf_info.get("vendor") or pdf_file["name"].split("_")[0]
+
+                            invoice_data = {
+                                "id": f"inv_{datetime.now().timestamp()}",
+                                "vendor": vendor,
+                                "amount": str(amount) if amount else "",
+                                "date": pdf_info.get("date") or "",
+                                "period": period_code,
+                                "source": "drive_scan",
+                                "drive_url": drive_url,
+                                "summary": pdf_info.get("summary") or "",
+                                "type": invoice_type,
+                                "status": "pending"
+                            }
+                            self.record_invoice(invoice_data)
+                            results["registered"] += 1
+                            results["invoices"].append(invoice_data)
+
+                        except Exception as e:
+                            results["errors"].append(f"{pdf_file['name']}: {str(e)}")
+
+                except Exception as e:
+                    results["errors"].append(f"{sub_folder_name}: {str(e)}")
+
+        return results
+
+    def _find_folder(self, name: str, parent_id: str) -> Optional[str]:
+        """フォルダを検索（存在しなければNone）"""
+        query = (
+            f"name='{name}' and "
+            f"'{parent_id}' in parents and "
+            f"mimeType='application/vnd.google-apps.folder' and "
+            f"trashed=false"
+        )
+        results = self.drive.files().list(
+            q=query, spaces="drive", fields="files(id)"
+        ).execute()
+        files = results.get("files", [])
+        return files[0]["id"] if files else None
+
+    def _list_pdfs_in_folder(self, folder_id: str) -> list[dict]:
+        """フォルダ内のPDFファイル一覧を返す"""
+        query = (
+            f"'{folder_id}' in parents and "
+            f"mimeType='application/pdf' and "
+            f"trashed=false"
+        )
+        results = self.drive.files().list(
+            q=query, spaces="drive",
+            fields="files(id, name, webViewLink)",
+            orderBy="name"
+        ).execute()
+        return results.get("files", [])
+
     def parse_saison_csv(self, csv_content: str) -> list[dict]:
         """SaisonカードCSVをパース"""
         transactions = []
