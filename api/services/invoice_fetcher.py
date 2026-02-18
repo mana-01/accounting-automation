@@ -14,35 +14,92 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
 
-def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
+def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
     """
-    PDFから金額を抽出する
-    Returns: 金額（円）またはNone
+    Gemini APIを使ってPDFから請求書データを構造化抽出する
+    Returns: {"amount": int|None, "vendor": str|None, "date": str|None, "summary": str|None}
+    """
+    try:
+        import google.generativeai as genai
+
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            print("GEMINI_API_KEY not set, falling back to regex extraction")
+            return _extract_amount_from_pdf_regex(pdf_data)
+
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-2.0-flash")
+
+        # PDFをbase64エンコードしてGeminiに送信
+        pdf_part = {
+            "mime_type": "application/pdf",
+            "data": pdf_data,
+        }
+
+        prompt = """この請求書PDFから以下の情報をJSON形式で抽出してください。
+必ず以下のJSON形式のみで回答してください。説明文は不要です。
+
+{
+  "amount": 請求金額（税込合計、整数、円単位、不明ならnull）,
+  "vendor": "請求元の会社名・サービス名（不明ならnull）",
+  "date": "請求日または発行日（YYYY-MM-DD形式、不明ならnull）",
+  "summary": "請求内容の簡潔な要約（20文字以内）"
+}"""
+
+        response = model.generate_content([prompt, pdf_part])
+        text = response.text.strip()
+
+        # JSON部分を抽出（```json ... ``` で囲まれている場合に対応）
+        if "```" in text:
+            text = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+            text = text.group(1) if text else "{}"
+
+        data = json.loads(text)
+
+        # 金額を整数に正規化
+        amount = data.get("amount")
+        if amount is not None:
+            try:
+                amount = int(str(amount).replace(",", "").replace("¥", "").replace("￥", ""))
+            except (ValueError, TypeError):
+                amount = None
+
+        return {
+            "amount": amount,
+            "vendor": data.get("vendor"),
+            "date": data.get("date"),
+            "summary": data.get("summary"),
+        }
+
+    except Exception as e:
+        print(f"Error extracting invoice data with Gemini: {e}")
+        # フォールバック: 正規表現ベースの抽出
+        return _extract_amount_from_pdf_regex(pdf_data)
+
+
+def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
+    """
+    正規表現ベースのフォールバック抽出（Gemini APIが使えない場合）
+    Returns: {"amount": int|None, "vendor": None, "date": None, "summary": None}
     """
     try:
         import pdfplumber
 
         with pdfplumber.open(BytesIO(pdf_data)) as pdf:
             text = ""
-            for page in pdf.pages[:3]:  # 最初の3ページのみ
+            for page in pdf.pages[:3]:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
 
         if not text:
-            return None
+            return {"amount": None, "vendor": None, "date": None, "summary": None}
 
-        # 金額パターンを探す（優先度順）
         patterns = [
-            # ご請求金額、お支払い金額などの後の金額
             r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            # Total, Amount due などの英語パターン
             r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*[¥￥$]?\s*([\d,]+)',
-            # 「合計」の後の金額
             r'合計[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            # ¥マーク付きの大きな金額（10,000円以上）
             r'[¥￥]\s*([\d,]{5,})',
-            # 「円」で終わる大きな金額
             r'([\d,]{5,})\s*円',
         ]
 
@@ -52,25 +109,30 @@ def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
             for match in matches:
                 try:
                     amount = int(match.replace(",", ""))
-                    # 妥当な金額範囲（100円〜10,000,000円）
                     if 100 <= amount <= 10000000:
                         amounts.append(amount)
                 except ValueError:
                     continue
 
+        amount = None
         if amounts:
-            # 最も頻出する金額、または最大の金額を返す
             from collections import Counter
             count = Counter(amounts)
             most_common = count.most_common(1)
             if most_common:
-                return most_common[0][0]
+                amount = most_common[0][0]
 
-        return None
+        return {"amount": amount, "vendor": None, "date": None, "summary": None}
 
     except Exception as e:
-        print(f"Error extracting amount from PDF: {e}")
-        return None
+        print(f"Error in regex PDF extraction: {e}")
+        return {"amount": None, "vendor": None, "date": None, "summary": None}
+
+
+def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
+    """後方互換: 金額のみ返す"""
+    result = extract_invoice_data_with_gemini(pdf_data)
+    return result.get("amount")
 
 
 def parse_period(period_str: str) -> list[dict]:
@@ -485,15 +547,35 @@ class InvoiceFetcher:
 
         return {"periods": created}
 
-    def record_invoice(self, invoice_data: dict):
-        """請求書情報をSpreadsheetに記録"""
+    def _is_invoice_registered(self, drive_url: str) -> bool:
+        """invoicesシートに同じdrive_urlが既に登録されているか確認"""
+        try:
+            result = self.sheets.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range="invoices!F2:F1000"
+            ).execute()
+            rows = result.get("values", [])
+            return any(row[0] == drive_url for row in rows if row)
+        except Exception:
+            return False
+
+    def record_invoice(self, invoice_data: dict) -> bool:
+        """
+        請求書情報をSpreadsheetに記録。
+        重複（同じdrive_url）がある場合はスキップしてFalseを返す。
+        """
+        drive_url = invoice_data.get("drive_url", "")
+        if drive_url and self._is_invoice_registered(drive_url):
+            print(f"[record_invoice] skipped duplicate: {drive_url}")
+            return False
+
         row = [
             invoice_data.get("id", ""),
             invoice_data.get("vendor", ""),
             invoice_data.get("amount", ""),
             invoice_data.get("date", ""),
             invoice_data.get("source", ""),
-            invoice_data.get("drive_url", ""),
+            drive_url,
             invoice_data.get("status", "pending"),
             datetime.now().isoformat()
         ]
@@ -504,19 +586,53 @@ class InvoiceFetcher:
             valueInputOption="USER_ENTERED",
             body={"values": [row]}
         ).execute()
+        return True
+
+    def _register_single_invoice(self, pdf_data: bytes, drive_result: dict,
+                                 rule_name: str, email_date: str, period: str) -> dict:
+        """
+        単一のPDFをGemini解析してinvoicesシートに登録する。
+        Drive保存とは独立したtry/exceptで呼ぶこと。
+        戻り値: {"registered": bool, "invoice": dict|None, "error": str|None}
+        """
+        try:
+            pdf_info = extract_invoice_data_with_gemini(pdf_data)
+            amount = pdf_info.get("amount")
+            vendor = pdf_info.get("vendor") or rule_name
+
+            invoice_data = {
+                "id": f"inv_{datetime.now().timestamp()}",
+                "vendor": vendor,
+                "amount": str(amount) if amount else "",
+                "date": pdf_info.get("date") or email_date,
+                "period": period,
+                "source": "email_attachment",
+                "drive_url": drive_result["web_view_link"],
+                "summary": pdf_info.get("summary") or "",
+                "type": "credit",
+                "status": "pending"
+            }
+            recorded = self.record_invoice(invoice_data)
+            if not recorded:
+                return {"registered": False, "invoice": None, "error": None, "duplicate": True}
+            return {"registered": True, "invoice": invoice_data, "error": None}
+        except Exception as e:
+            return {"registered": False, "invoice": None, "error": str(e)}
 
     def fetch_invoices(self, days_back: int = 30) -> dict:
-        """メールから請求書を取得するメイン処理"""
+        """メールから請求書PDFを取得しDriveに保存、保存成功したら自動登録"""
         rules = self.get_email_rules()
         results = {
             "processed": 0,
             "saved": 0,
+            "registered": 0,
+            "skipped": 0,
             "errors": [],
+            "register_errors": [],
             "invoices": []
         }
 
         for rule in rules:
-            # 全Gmailアカウントを検索
             for user_email in self.gmail_users:
                 try:
                     emails = self.search_emails(rule, days_back, user_email=user_email)
@@ -524,17 +640,14 @@ class InvoiceFetcher:
 
                     for email in emails:
                         email_date = self.get_message_date(email)
-                        subject = self.get_message_subject(email)
 
-                        # 期間を計算（YYYY年M月形式）
                         try:
                             dt = datetime.strptime(email_date, "%Y-%m-%d")
-                            period = f"{dt.year}年{dt.month}月"
-                        except:
-                            period = datetime.now().strftime("%Y年%m月")
+                            period = f"{dt.year}{dt.month:02d}"
+                        except Exception:
+                            period = datetime.now().strftime("%Y%m")
 
                         if rule.get("fetch_type") == "attachment":
-                            # PDF添付ファイルを取得
                             attachments = self.get_attachments(email)
                             for att in attachments:
                                 filename = f"{rule['name']}_{email_date}_{att['filename']}"
@@ -544,24 +657,25 @@ class InvoiceFetcher:
                                     period
                                 )
 
-                                # PDFから金額を抽出
-                                amount = extract_amount_from_pdf(att["data"])
+                                if drive_result.get("skipped"):
+                                    results["skipped"] += 1
+                                    continue
 
-                                invoice_data = {
-                                    "id": f"inv_{datetime.now().timestamp()}",
-                                    "vendor": rule["name"],
-                                    "amount": str(amount) if amount else "",
-                                    "date": email_date,
-                                    "source": "email_attachment",
-                                    "drive_url": drive_result["web_view_link"],
-                                    "status": "pending"
-                                }
-                                self.record_invoice(invoice_data)
                                 results["saved"] += 1
-                                results["invoices"].append(invoice_data)
+
+                                # Drive保存成功 → 自動的にinvoice登録（独立したエラーハンドリング）
+                                reg = self._register_single_invoice(
+                                    att["data"], drive_result, rule["name"], email_date, period
+                                )
+                                if reg["registered"]:
+                                    results["registered"] += 1
+                                    results["invoices"].append(reg["invoice"])
+                                elif reg.get("duplicate"):
+                                    results["skipped"] += 1
+                                elif reg["error"]:
+                                    results["register_errors"].append(f"{filename}: {reg['error']}")
 
                         elif rule.get("fetch_type") == "link":
-                            # リンクから取得（TODO: 実装）
                             links = self.extract_links(email, rule.get("link_pattern"))
                             for link in links:
                                 results["invoices"].append({
@@ -578,7 +692,7 @@ class InvoiceFetcher:
 
     def fetch_invoices_by_period(self, period_str: str) -> dict:
         """
-        期間指定でメールから請求書を取得
+        期間指定でメールからPDFを取得しDriveに保存、保存成功したら自動登録
         period_str: "202602" or "202509~202601"
         """
         periods = parse_period(period_str)
@@ -587,13 +701,14 @@ class InvoiceFetcher:
         results = {
             "processed": 0,
             "saved": 0,
+            "registered": 0,
             "skipped": 0,
             "errors": [],
+            "register_errors": [],
             "invoices": [],
             "periods_created": []
         }
 
-        # まずフォルダ構造を作成
         folder_result = self.create_period_folders(period_str)
         results["periods_created"] = folder_result["periods"]
 
@@ -602,9 +717,7 @@ class InvoiceFetcher:
             year = p["year"]
             month = p["month"]
 
-            # 該当月の開始日と終了日（月末まで含む）
             start_date = f"{year}/{month:02d}/01"
-            # 翌月の1日をbefore条件にすることで月末まで含む
             if month == 12:
                 end_year = year + 1
                 end_month = 1
@@ -614,7 +727,6 @@ class InvoiceFetcher:
             end_date = f"{end_year}/{end_month:02d}/01"
 
             for rule in rules:
-                # 全Gmailアカウントを検索
                 for user_email in self.gmail_users:
                     try:
                         emails = self.search_emails(
@@ -639,33 +751,138 @@ class InvoiceFetcher:
                                         invoice_type="credit"
                                     )
 
-                                    # 重複の場合はスキップ
                                     if drive_result.get("skipped"):
                                         results["skipped"] += 1
                                         continue
 
-                                    # PDFから金額を抽出
-                                    amount = extract_amount_from_pdf(att["data"])
-
-                                    invoice_data = {
-                                        "id": f"inv_{datetime.now().timestamp()}",
-                                        "vendor": rule["name"],
-                                        "amount": str(amount) if amount else "",
-                                        "date": email_date,
-                                        "period": period_code,
-                                        "source": "email_attachment",
-                                        "drive_url": drive_result["web_view_link"],
-                                        "type": "credit",
-                                        "status": "pending"
-                                    }
-                                    self.record_invoice(invoice_data)
                                     results["saved"] += 1
-                                    results["invoices"].append(invoice_data)
+
+                                    # Drive保存成功 → 自動的にinvoice登録
+                                    reg = self._register_single_invoice(
+                                        att["data"], drive_result, rule["name"], email_date, period_code
+                                    )
+                                    if reg["registered"]:
+                                        results["registered"] += 1
+                                        results["invoices"].append(reg["invoice"])
+                                    elif reg.get("duplicate"):
+                                        results["skipped"] += 1
+                                    elif reg["error"]:
+                                        results["register_errors"].append(f"{filename}: {reg['error']}")
 
                     except Exception as e:
                         results["errors"].append(f"{rule.get('name', 'unknown')} ({user_email}, {period_code}): {str(e)}")
 
         return results
+
+    def register_from_drive(self, period_str: str) -> dict:
+        """
+        指定期間のDriveフォルダ内の既存PDFを走査し、
+        未登録のものをGemini解析してinvoicesシートに登録する。
+        """
+        periods = parse_period(period_str)
+        results = {
+            "scanned": 0,
+            "registered": 0,
+            "skipped": 0,
+            "errors": [],
+            "invoices": []
+        }
+
+        for p in periods:
+            period_code = p["code"]
+            year = p["year"]
+            month = p["month"]
+            month_folder_name = f"{year}年{month}月"
+
+            for invoice_type in ["credit", "bank"]:
+                type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
+                sub_folder_name = f"{period_code}_{type_name}"
+
+                try:
+                    # 月フォルダを検索
+                    month_folder_id = self._find_folder(month_folder_name, self.drive_folder_id)
+                    if not month_folder_id:
+                        continue
+
+                    # サブフォルダを検索
+                    sub_folder_id = self._find_folder(sub_folder_name, month_folder_id)
+                    if not sub_folder_id:
+                        continue
+
+                    # フォルダ内のPDFを一覧
+                    pdf_files = self._list_pdfs_in_folder(sub_folder_id)
+                    results["scanned"] += len(pdf_files)
+
+                    for pdf_file in pdf_files:
+                        drive_url = pdf_file.get("webViewLink", "")
+
+                        # 既にinvoicesシートに登録済みならスキップ
+                        if drive_url and self._is_invoice_registered(drive_url):
+                            results["skipped"] += 1
+                            continue
+
+                        try:
+                            # DriveからPDFデータをダウンロード
+                            pdf_data = self.drive.files().get_media(
+                                fileId=pdf_file["id"]
+                            ).execute()
+
+                            # Gemini解析
+                            pdf_info = extract_invoice_data_with_gemini(pdf_data)
+                            amount = pdf_info.get("amount")
+                            vendor = pdf_info.get("vendor") or pdf_file["name"].split("_")[0]
+
+                            invoice_data = {
+                                "id": f"inv_{datetime.now().timestamp()}",
+                                "vendor": vendor,
+                                "amount": str(amount) if amount else "",
+                                "date": pdf_info.get("date") or "",
+                                "period": period_code,
+                                "source": "drive_scan",
+                                "drive_url": drive_url,
+                                "summary": pdf_info.get("summary") or "",
+                                "type": invoice_type,
+                                "status": "pending"
+                            }
+                            self.record_invoice(invoice_data)
+                            results["registered"] += 1
+                            results["invoices"].append(invoice_data)
+
+                        except Exception as e:
+                            results["errors"].append(f"{pdf_file['name']}: {str(e)}")
+
+                except Exception as e:
+                    results["errors"].append(f"{sub_folder_name}: {str(e)}")
+
+        return results
+
+    def _find_folder(self, name: str, parent_id: str) -> Optional[str]:
+        """フォルダを検索（存在しなければNone）"""
+        query = (
+            f"name='{name}' and "
+            f"'{parent_id}' in parents and "
+            f"mimeType='application/vnd.google-apps.folder' and "
+            f"trashed=false"
+        )
+        results = self.drive.files().list(
+            q=query, spaces="drive", fields="files(id)"
+        ).execute()
+        files = results.get("files", [])
+        return files[0]["id"] if files else None
+
+    def _list_pdfs_in_folder(self, folder_id: str) -> list[dict]:
+        """フォルダ内のPDFファイル一覧を返す"""
+        query = (
+            f"'{folder_id}' in parents and "
+            f"mimeType='application/pdf' and "
+            f"trashed=false"
+        )
+        results = self.drive.files().list(
+            q=query, spaces="drive",
+            fields="files(id, name, webViewLink)",
+            orderBy="name"
+        ).execute()
+        return results.get("files", [])
 
     def parse_saison_csv(self, csv_content: str) -> list[dict]:
         """SaisonカードCSVをパース"""

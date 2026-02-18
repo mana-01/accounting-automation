@@ -9,6 +9,11 @@
       }
     }
   ],
+  "functions": {
+    "api/slack.py": {
+      "maxDuration": 300
+    }
+  },
   "routes": [
     {
       "src": "/api/slack",
