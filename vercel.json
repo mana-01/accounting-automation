@@ -1,27 +1,19 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "api/slack.py",
-      "use": "@vercel/python",
-      "config": {
-        "maxLambdaSize": "50mb"
-      }
-    }
-  ],
   "functions": {
     "api/slack.py": {
+      "runtime": "@vercel/python",
       "maxDuration": 300
     }
   },
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/slack",
-      "dest": "/api/slack.py"
+      "source": "/api/slack",
+      "destination": "/api/slack.py"
     },
     {
-      "src": "/(.*)",
-      "dest": "/api/slack.py"
+      "source": "/(.*)",
+      "destination": "/api/slack.py"
     }
   ]
 }
