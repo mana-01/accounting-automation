@@ -33,12 +33,11 @@ def handle_help(ack, respond):
 
 *コマンド一覧:*
 • `/accounting-help` - このヘルプを表示
-• `/accounting-status` - 今月の経理状況を確認
+• `/accounting-add-subscription` - メール取得ルールを追加
+• `/accounting-subscriptions` - ルール一覧・削除
 • `/accounting-fetch-invoices [期間]` - メールから請求書を自動取得
-• `/accounting-add-email-rule` - メール取得ルールを追加
-• `/accounting-email-rules` - ルール一覧・削除
-• `/accounting-invoices` - 取得済み請求書一覧
 • `/accounting-register-invoices <期間>` - Drive上のPDFをシートに登録
+• `/accounting-invoices` - 取得済み請求書一覧
 • `/accounting-reconcile [期間]` - CSV照会を実行
 
 *期間指定の例:*
@@ -46,7 +45,7 @@ def handle_help(ack, respond):
 • `202509~202601` - 2025年9月〜2026年1月
 
 *使い方:*
-1. `/accounting-add-email-rule` でメール取得ルールを設定
+1. `/accounting-add-subscription` でメール取得ルールを設定
 2. `/accounting-fetch-invoices 202602` でメールから請求書を取得
 3. CSVファイルをアップロード（Saisonまたは銀行）
 4. `/accounting-reconcile 202602` で照会
@@ -59,45 +58,7 @@ def handle_help(ack, respond):
     })
 
 
-@slack_app.command("/accounting-status")
-def handle_status(ack, respond):
-    """状況を表示"""
-    ack()
-
-    try:
-        from api.services.invoice_fetcher import invoice_fetcher
-
-        # Spreadsheetから請求書数を取得
-        result = invoice_fetcher.sheets.spreadsheets().values().get(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="invoices!A2:H1000"
-        ).execute()
-        invoices = result.get("values", [])
-
-        # ルール数を取得
-        rules_result = invoice_fetcher.sheets.spreadsheets().values().get(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="email_rules!A2:E100"
-        ).execute()
-        rules = rules_result.get("values", [])
-
-        respond({
-            "response_type": "ephemeral",
-            "text": f"""📊 *経理状況*
-
-• メール取得ルール: {len(rules)}件
-• 取得済み請求書: {len(invoices)}件
-
-`/accounting-fetch-invoices` でメールから請求書を取得できます。"""
-        })
-    except Exception as e:
-        respond({
-            "response_type": "ephemeral",
-            "text": f"📊 *経理状況*\n\nデータ取得中にエラー: {str(e)}"
-        })
-
-
-@slack_app.command("/accounting-add-email-rule")
+@slack_app.command("/accounting-add-subscription")
 def handle_add_email_rule(ack, client, body):
     """メール取得ルール追加モーダル"""
     ack()
@@ -460,8 +421,8 @@ def handle_invoices(ack, respond):
         })
 
 
-@slack_app.command("/accounting-email-rules")
-def handle_email_rules(ack, respond):
+@slack_app.command("/accounting-subscriptions")
+def handle_subscriptions(ack, respond):
     """メール取得ルール一覧"""
     ack()
 
@@ -543,7 +504,7 @@ def handle_delete_email_rule(ack, body, client):
 
         client.chat_postMessage(
             channel=user_id,
-            text="✅ ルールを削除しました。`/accounting-email-rules` で確認してください。"
+            text="✅ ルールを削除しました。`/accounting-subscriptions` で確認してください。"
         )
 
     except Exception as e:
@@ -551,26 +512,6 @@ def handle_delete_email_rule(ack, body, client):
             channel=user_id,
             text=f"❌ 削除エラー: {str(e)}"
         )
-
-
-@slack_app.command("/accounting-subscriptions")
-def handle_subscriptions(ack, respond):
-    """サブスク一覧（使わないが互換性のため残す）"""
-    ack()
-    respond({
-        "response_type": "ephemeral",
-        "text": "📋 この機能は `/accounting-email-rules` に置き換えられました。"
-    })
-
-
-@slack_app.command("/accounting-add-subscription")
-def handle_add_subscription(ack, respond):
-    """サブスク登録（使わないが互換性のため残す）"""
-    ack()
-    respond({
-        "response_type": "ephemeral",
-        "text": "📋 この機能は `/accounting-add-email-rule` に置き換えられました。"
-    })
 
 
 # === Slack Events ===
