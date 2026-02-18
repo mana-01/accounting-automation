@@ -1060,16 +1060,15 @@ def health():
 def slack_events():
     """Handle Slack events"""
     # デバッグ: リクエスト情報をログ出力
+    # request.get_data() でボディをキャッシュしてからログ出力する
+    # （request.form や request.get_json() を先に呼ぶとストリームが消費され、
+    #   slack-bolt の署名検証で body が空になってしまうため）
+    raw_body = request.get_data(as_text=True)
     content_type = request.content_type or ""
     if "form" in content_type:
-        command = request.form.get("command", "")
-        text = request.form.get("text", "")
-        print(f"[slack] POST form: command={command!r}, text={text!r}")
+        print(f"[slack] POST form: {raw_body[:200]}")
     elif "json" in content_type:
-        data = request.get_json(silent=True) or {}
-        event_type = data.get("type", "")
-        event = data.get("event", {})
-        print(f"[slack] POST json: type={event_type}, event.type={event.get('type', '')}")
+        print(f"[slack] POST json: {raw_body[:200]}")
     else:
         print(f"[slack] POST content_type={content_type}")
     return slack_handler.handle(request)
