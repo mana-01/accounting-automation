@@ -214,11 +214,17 @@ def handle_add_email_rule_submission(ack, body, client, view):
 @slack_app.command("/accounting-fetch-invoices")
 def handle_fetch_invoices(ack, respond, body, client):
     """メールから請求書を自動取得"""
+    import time as _time
+    _t0 = _time.time()
+    print(f"[fetch-invoices] START handler")
+
     ack()
+    print(f"[fetch-invoices] ack() done ({_time.time()-_t0:.3f}s)")
 
     # 引数から期間を取得
     text = body.get("text", "").strip()
     user_id = body.get("user_id")
+    print(f"[fetch-invoices] text={text!r}, user_id={user_id}")
 
     # 即座に応答（タイムアウト防止）
     if text:
@@ -231,19 +237,25 @@ def handle_fetch_invoices(ack, respond, body, client):
             "response_type": "ephemeral",
             "text": "📥 過去30日のメールから請求書を取得中...\n完了したらお知らせします（数分かかる場合があります）。"
         })
+    print(f"[fetch-invoices] respond() done ({_time.time()-_t0:.3f}s)")
 
     # 同期処理（Vercelサーバーレスではスレッドはレスポンス後に強制終了されるため）
     try:
         # Step 1: モジュールインポート
+        print(f"[fetch-invoices] Step 1: importing invoice_fetcher...")
         client.chat_postMessage(
             channel=user_id,
             text="🔄 [1/4] モジュールを読み込み中..."
         )
+        print(f"[fetch-invoices] Step 1: chat_postMessage sent ({_time.time()-_t0:.3f}s)")
 
         try:
             from api.services.invoice_fetcher import invoice_fetcher
+            print(f"[fetch-invoices] Step 1: import OK ({_time.time()-_t0:.3f}s)")
         except Exception as import_error:
             import traceback
+            print(f"[fetch-invoices] Step 1: IMPORT ERROR: {import_error}")
+            print(traceback.format_exc())
             client.chat_postMessage(
                 channel=user_id,
                 text=f"❌ インポートエラー:\n```{traceback.format_exc()}```"
@@ -251,7 +263,9 @@ def handle_fetch_invoices(ack, respond, body, client):
             return
 
         # Step 2: 設定確認
+        print(f"[fetch-invoices] Step 2: checking config...")
         if not invoice_fetcher.gmail_users:
+            print(f"[fetch-invoices] Step 2: NO gmail_users configured")
             client.chat_postMessage(
                 channel=user_id,
                 text="❌ エラー: Gmailアカウントが設定されていません。GMAIL_USER_EMAILS環境変数を確認してください。"
@@ -262,16 +276,21 @@ def handle_fetch_invoices(ack, respond, body, client):
             channel=user_id,
             text=f"🔄 [2/4] 設定確認OK\n📧 検索対象: {', '.join(invoice_fetcher.gmail_users)}"
         )
+        print(f"[fetch-invoices] Step 2: OK ({_time.time()-_t0:.3f}s)")
 
         # Step 3: ルール取得
+        print(f"[fetch-invoices] Step 3: fetching rules...")
         try:
             rules = invoice_fetcher.get_email_rules()
             client.chat_postMessage(
                 channel=user_id,
                 text=f"🔄 [3/4] メール取得ルール: {len(rules)}件取得"
             )
+            print(f"[fetch-invoices] Step 3: {len(rules)} rules ({_time.time()-_t0:.3f}s)")
         except Exception as rule_error:
             import traceback
+            print(f"[fetch-invoices] Step 3: RULE ERROR: {rule_error}")
+            print(traceback.format_exc())
             client.chat_postMessage(
                 channel=user_id,
                 text=f"❌ ルール取得エラー:\n```{traceback.format_exc()}```"
@@ -279,13 +298,16 @@ def handle_fetch_invoices(ack, respond, body, client):
             return
 
         # Step 4: 請求書取得
+        print(f"[fetch-invoices] Step 4: fetching invoices...")
         client.chat_postMessage(
             channel=user_id,
             text=f"🔄 [4/4] メール検索・請求書保存中...\n（ルール{len(rules)}件 x アカウント{len(invoice_fetcher.gmail_users)}件）"
         )
 
         if text:
+            print(f"[fetch-invoices] Step 4: calling fetch_invoices_by_period({text!r})")
             results = invoice_fetcher.fetch_invoices_by_period(text)
+            print(f"[fetch-invoices] Step 4: fetch done - processed={results.get('processed')}, saved={results.get('saved')}, errors={len(results.get('errors', []))} ({_time.time()-_t0:.3f}s)")
 
             periods_info = ""
             for p in results.get("periods_created", [])[:5]:
@@ -327,7 +349,9 @@ Google Driveに保存されました。
 次にCSVファイルをアップロードしてください。"""
                 )
         else:
+            print(f"[fetch-invoices] Step 4: calling fetch_invoices(days_back=30)")
             results = invoice_fetcher.fetch_invoices(days_back=30)
+            print(f"[fetch-invoices] Step 4: fetch done - processed={results.get('processed')}, saved={results.get('saved')}, errors={len(results.get('errors', []))} ({_time.time()-_t0:.3f}s)")
 
             if results["errors"]:
                 error_text = "\n".join(results["errors"][:10])
@@ -362,10 +386,17 @@ Google Driveに保存されました。
     except Exception as e:
         import traceback
         error_detail = traceback.format_exc()
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"❌ 予期しないエラー（Step不明）:\n`{type(e).__name__}: {e}`\n\n```{error_detail[:1500]}```"
-        )
+        print(f"[fetch-invoices] UNHANDLED ERROR: {type(e).__name__}: {e}")
+        print(error_detail)
+        try:
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"❌ 予期しないエラー（Step不明）:\n`{type(e).__name__}: {e}`\n\n```{error_detail[:1500]}```"
+            )
+        except Exception as notify_err:
+            print(f"[fetch-invoices] Failed to notify user: {notify_err}")
+
+    print(f"[fetch-invoices] END handler ({_time.time()-_t0:.3f}s)")
 
 
 @slack_app.command("/accounting-invoices")
@@ -1072,4 +1103,17 @@ def health():
 @app.route("/api/slack", methods=["POST"])
 def slack_events():
     """Handle Slack events"""
+    # デバッグ: リクエスト情報をログ出力
+    content_type = request.content_type or ""
+    if "form" in content_type:
+        command = request.form.get("command", "")
+        text = request.form.get("text", "")
+        print(f"[slack] POST form: command={command!r}, text={text!r}")
+    elif "json" in content_type:
+        data = request.get_json(silent=True) or {}
+        event_type = data.get("type", "")
+        event = data.get("event", {})
+        print(f"[slack] POST json: type={event_type}, event.type={event.get('type', '')}")
+    else:
+        print(f"[slack] POST content_type={content_type}")
     return slack_handler.handle(request)
