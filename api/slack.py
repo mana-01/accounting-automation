@@ -716,7 +716,8 @@ def _process_csv(body, client, csv_type: str):
                 _time.sleep(2 ** attempt)
 
         if response is None or response.status_code != 200:
-            raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={response.status_code if response else \"no response\"}'}")
+            status = response.status_code if response else "no response"
+            raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={status}'}")
 
         # CSVをパース（日本の銀行CSVはShift-JIS、SaisonはUTF-8が多い）
         # 複数のエンコーディングを試す
@@ -851,7 +852,8 @@ def _save_invoice_pdf(body, client, invoice_type: str):
                 _time.sleep(2 ** attempt)
 
         if response is None or response.status_code != 200:
-            raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={response.status_code if response else \"no response\"}'}")
+            status = response.status_code if response else "no response"
+            raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={status}'}")
 
         # Gemini APIで請求書データを抽出
         pdf_info = extract_invoice_data_with_gemini(response.content)
