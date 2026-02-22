@@ -683,6 +683,7 @@ def handle_process_csv_bank(ack, body, client):
 def _process_csv(body, client, csv_type: str):
     """CSV処理の共通ロジック"""
     import requests
+    import time as _time
 
     file_id = body["actions"][0]["value"]
     channel_id = body["channel"]["id"]
@@ -696,12 +697,26 @@ def _process_csv(body, client, csv_type: str):
         file_name = file_data.get("name", "")
         download_url = file_data.get("url_private_download")
 
-        # ファイルをダウンロード
+        # ファイルをダウンロード（タイムアウト+リトライ付き）
         headers = {"Authorization": f"Bearer {os.environ.get('SLACK_BOT_TOKEN')}"}
-        response = requests.get(download_url, headers=headers)
+        response = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = requests.get(download_url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    break
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                print(f"[process_csv] download timeout (attempt {attempt+1}/3)")
+                _time.sleep(2 ** attempt)
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                print(f"[process_csv] download error (attempt {attempt+1}/3): {e}")
+                _time.sleep(2 ** attempt)
 
-        if response.status_code != 200:
-            raise Exception("ファイルのダウンロードに失敗しました")
+        if response is None or response.status_code != 200:
+            raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={response.status_code if response else \"no response\"}'}")
 
         # CSVをパース（日本の銀行CSVはShift-JIS、SaisonはUTF-8が多い）
         # 複数のエンコーディングを試す
@@ -801,6 +816,7 @@ def _save_invoice_pdf(body, client, invoice_type: str):
     """PDF保存の共通ロジック（Gemini解析→命名ルールでDrive保存→シート登録）"""
     import requests
     from datetime import datetime
+    import time as _time
 
     file_id = body["actions"][0]["value"]
     channel_id = body["channel"]["id"]
@@ -813,19 +829,36 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         # ファイル情報を取得
         file_info = client.files_info(file=file_id)
         file_data = file_info["file"]
+        original_filename = file_data.get("name", "")
         download_url = file_data.get("url_private_download")
 
-        # ファイルをダウンロード
+        # ファイルをダウンロード（タイムアウト+リトライ付き）
         headers = {"Authorization": f"Bearer {os.environ.get('SLACK_BOT_TOKEN')}"}
-        response = requests.get(download_url, headers=headers)
+        response = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = requests.get(download_url, headers=headers, timeout=30)
+                if response.status_code == 200:
+                    break
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                print(f"[save_invoice_pdf] download timeout (attempt {attempt+1}/3)")
+                _time.sleep(2 ** attempt)
+            except requests.exceptions.RequestException as e:
+                last_error = e
+                print(f"[save_invoice_pdf] download error (attempt {attempt+1}/3): {e}")
+                _time.sleep(2 ** attempt)
 
-        if response.status_code != 200:
-            raise Exception("ファイルのダウンロードに失敗しました")
+        if response is None or response.status_code != 200:
+            raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={response.status_code if response else \"no response\"}'}")
 
         # Gemini APIで請求書データを抽出
         pdf_info = extract_invoice_data_with_gemini(response.content)
         amount = pdf_info.get("amount")
-        vendor = pdf_info.get("vendor") or "手動アップロード"
+        # ベンダー名: Gemini結果 → 元のSlackファイル名（拡張子除去）→ フォールバック
+        original_name_stem = re.sub(r'\.[^.]+$', '', original_filename).strip() if original_filename else ""
+        vendor = pdf_info.get("vendor") or original_name_stem or "手動アップロード"
         now = datetime.now()
         inv_date = pdf_info.get("date") or now.strftime("%Y-%m-%d")
 
