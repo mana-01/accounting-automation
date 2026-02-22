@@ -24,7 +24,6 @@ app = Flask(__name__)
 slack_app = SlackApp(
     token=_BOT_TOKEN or None,
     signing_secret=_SIGNING_SECRET or None,
-    process_before_response=True,
 )
 
 slack_handler = SlackRequestHandler(slack_app)
