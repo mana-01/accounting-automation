@@ -1073,4 +1073,6 @@ def slack_events():
         print(f"[slack] POST json: {raw_body[:200]}")
     else:
         print(f"[slack] POST content_type={content_type}")
-    return slack_handler.handle(request)
+    resp = slack_handler.handle(request)
+    print(f"[slack] Response: status={resp.status_code}, body={resp.get_data(as_text=True)[:300]}")
+    return resp
