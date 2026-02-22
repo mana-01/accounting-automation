@@ -9,32 +9,17 @@ from slack_bolt import App as SlackApp
 from slack_bolt.adapter.flask import SlackRequestHandler
 from slack_sdk import WebClient
 
-# --- Startup diagnostics ---
-_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
-_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
-print(f"[startup] SLACK_BOT_TOKEN set: {bool(_BOT_TOKEN)} (len={len(_BOT_TOKEN)})")
-print(f"[startup] SLACK_SIGNING_SECRET set: {bool(_SIGNING_SECRET)} (len={len(_SIGNING_SECRET)})")
-print(f"[startup] GOOGLE_CREDENTIALS set: {bool(os.environ.get('GOOGLE_CREDENTIALS', ''))}")
-print(f"[startup] GEMINI_API_KEY set: {bool(os.environ.get('GEMINI_API_KEY', ''))}")
-
 # Flask app
 app = Flask(__name__)
 
 # Slack App
 slack_app = SlackApp(
-    token=_BOT_TOKEN or None,
-    signing_secret=_SIGNING_SECRET or None,
+    token=os.environ.get("SLACK_BOT_TOKEN"),
+    signing_secret=os.environ.get("SLACK_SIGNING_SECRET"),
+    process_before_response=True,
 )
 
 slack_handler = SlackRequestHandler(slack_app)
-
-
-# Global error handler – catches all unhandled listener errors
-@slack_app.error
-def global_error_handler(error, body, logger):
-    print(f"[slack_bolt ERROR] {type(error).__name__}: {error}")
-    print(f"[slack_bolt ERROR] body keys: {list(body.keys()) if body else 'N/A'}")
-    traceback.print_exc()
 
 
 # === Slack Commands ===
@@ -42,8 +27,10 @@ def global_error_handler(error, body, logger):
 @slack_app.command("/accounting-help")
 def handle_help(ack, respond):
     """ヘルプを表示"""
-    print("[help] handler called")
-    ack(text="""*経理自動化Bot ヘルプ*
+    ack()
+    respond({
+        "response_type": "ephemeral",
+        "text": """*経理自動化Bot ヘルプ*
 
 *コマンド一覧:*
 • `/accounting-help` - このヘルプを表示
@@ -68,14 +55,56 @@ def handle_help(ack, respond):
 *フォルダ構造:*
 📁 2026年2月/
 ├── 📁 202602_クレジット/
-└── 📁 202602_銀行振込/""")
-    print("[help] ack() done")
+└── 📁 202602_銀行振込/"""
+    })
+
+
+@slack_app.command("/accounting-status")
+def handle_status(ack, respond):
+    """状況を表示"""
+    ack()
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="invoices!A2:H1000"
+        ).execute()
+        invoices = result.get("values", [])
+
+        rules_result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="email_rules!A2:E100"
+        ).execute()
+        rules = rules_result.get("values", [])
+
+        respond({
+            "response_type": "ephemeral",
+            "text": f"📊 *経理状況*\n\n• メール取得ルール: {len(rules)}件\n• 取得済み請求書: {len(invoices)}件\n\n`/accounting-fetch-invoices` でメールから請求書を取得できます。"
+        })
+    except Exception as e:
+        respond({
+            "response_type": "ephemeral",
+            "text": f"📊 *経理状況*\n\nデータ取得中にエラー: {str(e)}"
+        })
 
 
 @slack_app.command("/accounting-add-subscription")
-def handle_add_email_rule(ack, client, body):
-    """メール取得ルール追加モーダル"""
+def handle_add_subscription(ack, client, body):
+    """メール取得ルール追加モーダル（新名称）"""
     ack()
+    _open_add_rule_modal(client, body)
+
+
+@slack_app.command("/accounting-add-email-rule")
+def handle_add_email_rule(ack, client, body):
+    """メール取得ルール追加モーダル（旧名称 - 後方互換）"""
+    ack()
+    _open_add_rule_modal(client, body)
+
+
+def _open_add_rule_modal(client, body):
+    """ルール追加モーダルを開く共通関数"""
     client.views_open(
         trigger_id=body["trigger_id"],
         view={
@@ -190,36 +219,32 @@ def handle_add_email_rule_submission(ack, body, client, view):
 @slack_app.command("/accounting-fetch-invoices")
 def handle_fetch_invoices(ack, respond, body, client):
     """メールから請求書を自動取得（Gmail→Drive保存 + Gemini解析→シート登録の2段階）"""
-    import time as _time
-    _t0 = _time.time()
-    print(f"[fetch-invoices] START handler")
+    ack()
 
     text = body.get("text", "").strip()
     user_id = body.get("user_id")
-    print(f"[fetch-invoices] text={text!r}, user_id={user_id}")
 
     if text:
-        ack(text=f"📥 期間 `{text}` の請求書を取得中...\n完了したらお知らせします（数分かかる場合があります）。")
+        respond({
+            "response_type": "ephemeral",
+            "text": f"📥 期間 `{text}` の請求書を取得中...\n完了したらお知らせします（数分かかる場合があります）。"
+        })
     else:
-        ack(text="📥 過去30日のメールから請求書を取得中...\n完了したらお知らせします（数分かかる場合があります）。")
-    print(f"[fetch-invoices] ack() done ({_time.time()-_t0:.3f}s)")
+        respond({
+            "response_type": "ephemeral",
+            "text": "📥 過去30日のメールから請求書を取得中...\n完了したらお知らせします（数分かかる場合があります）。"
+        })
 
     try:
         # Step 1: モジュールインポート
-        print(f"[fetch-invoices] Step 1: importing invoice_fetcher...")
         client.chat_postMessage(
             channel=user_id,
             text="🔄 [1/4] モジュールを読み込み中..."
         )
-        print(f"[fetch-invoices] Step 1: chat_postMessage sent ({_time.time()-_t0:.3f}s)")
 
         try:
             from api.services.invoice_fetcher import invoice_fetcher
-            print(f"[fetch-invoices] Step 1: import OK ({_time.time()-_t0:.3f}s)")
         except Exception as import_error:
-            import traceback
-            print(f"[fetch-invoices] Step 1: IMPORT ERROR: {import_error}")
-            print(traceback.format_exc())
             client.chat_postMessage(
                 channel=user_id,
                 text=f"❌ インポートエラー:\n```{traceback.format_exc()}```"
@@ -227,9 +252,7 @@ def handle_fetch_invoices(ack, respond, body, client):
             return
 
         # Step 2: 設定確認
-        print(f"[fetch-invoices] Step 2: checking config...")
         if not invoice_fetcher.gmail_users:
-            print(f"[fetch-invoices] Step 2: NO gmail_users configured")
             client.chat_postMessage(
                 channel=user_id,
                 text="❌ エラー: Gmailアカウントが設定されていません。GMAIL_USER_EMAILS環境変数を確認してください。"
@@ -240,21 +263,15 @@ def handle_fetch_invoices(ack, respond, body, client):
             channel=user_id,
             text=f"🔄 [2/4] 設定確認OK\n📧 検索対象: {', '.join(invoice_fetcher.gmail_users)}"
         )
-        print(f"[fetch-invoices] Step 2: OK ({_time.time()-_t0:.3f}s)")
 
         # Step 3: ルール取得
-        print(f"[fetch-invoices] Step 3: fetching rules...")
         try:
             rules = invoice_fetcher.get_email_rules()
             client.chat_postMessage(
                 channel=user_id,
                 text=f"🔄 [3/4] メール取得ルール: {len(rules)}件取得"
             )
-            print(f"[fetch-invoices] Step 3: {len(rules)} rules ({_time.time()-_t0:.3f}s)")
         except Exception as rule_error:
-            import traceback
-            print(f"[fetch-invoices] Step 3: RULE ERROR: {rule_error}")
-            print(traceback.format_exc())
             client.chat_postMessage(
                 channel=user_id,
                 text=f"❌ ルール取得エラー:\n```{traceback.format_exc()}```"
@@ -262,20 +279,15 @@ def handle_fetch_invoices(ack, respond, body, client):
             return
 
         # Step 4: Gmail検索 → Drive保存 → 自動的にGemini解析・シート登録
-        print(f"[fetch-invoices] Step 4: fetching emails and saving to Drive...")
         client.chat_postMessage(
             channel=user_id,
             text=f"🔄 [4/4] メール検索・PDF保存・登録中...\n（ルール{len(rules)}件 x アカウント{len(invoice_fetcher.gmail_users)}件）"
         )
 
         if text:
-            print(f"[fetch-invoices] Step 4: calling fetch_invoices_by_period({text!r})")
             results = invoice_fetcher.fetch_invoices_by_period(text)
         else:
-            print(f"[fetch-invoices] Step 4: calling fetch_invoices(days_back=30)")
             results = invoice_fetcher.fetch_invoices(days_back=30)
-
-        print(f"[fetch-invoices] Step 4: done - processed={results.get('processed')}, saved={results.get('saved')}, registered={results.get('registered')}, skipped={results.get('skipped')}, errors={len(results.get('errors', []))}, reg_errors={len(results.get('register_errors', []))} ({_time.time()-_t0:.3f}s)")
 
         # 結果サマリー構築
         periods_info = ""
@@ -322,31 +334,36 @@ def handle_fetch_invoices(ack, respond, body, client):
         try:
             client.chat_postMessage(
                 channel=user_id,
-                text=f"❌ 予期しないエラー（Step不明）:\n`{type(e).__name__}: {e}`\n\n```{error_detail[:1500]}```"
+                text=f"❌ 予期しないエラー:\n`{type(e).__name__}: {e}`\n\n```{error_detail[:1500]}```"
             )
-        except Exception as notify_err:
-            print(f"[fetch-invoices] Failed to notify user: {notify_err}")
-
-    print(f"[fetch-invoices] END handler ({_time.time()-_t0:.3f}s)")
+        except Exception:
+            pass
 
 
 @slack_app.command("/accounting-register-invoices")
 def handle_register_invoices(ack, respond, body, client):
     """Drive上の既存PDFをinvoicesシートに登録"""
+    ack()
+
     text = body.get("text", "").strip()
     user_id = body.get("user_id")
 
     if not text:
-        ack(text="❌ 期間を指定してください。\n例: `/accounting-register-invoices 202509` または `202509~202602`")
+        respond({
+            "response_type": "ephemeral",
+            "text": "❌ 期間を指定してください。\n例: `/accounting-register-invoices 202509` または `202509~202602`"
+        })
         return
 
-    ack(text=f"🔍 期間 `{text}` のDriveフォルダを走査中...\n未登録のPDFをシートに登録します。")
+    respond({
+        "response_type": "ephemeral",
+        "text": f"🔍 期間 `{text}` のDriveフォルダを走査中...\n未登録のPDFをシートに登録します。"
+    })
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher
 
         results = invoice_fetcher.register_from_drive(text)
-        print(f"[register-invoices] scanned={results['scanned']}, registered={results['registered']}, skipped={results['skipped']}, errors={len(results['errors'])}")
 
         invoice_list = ""
         for inv in results.get("invoices", [])[:10]:
@@ -364,8 +381,6 @@ def handle_register_invoices(ack, respond, body, client):
         )
 
     except Exception as e:
-        import traceback
-        print(f"[register-invoices] ERROR: {traceback.format_exc()}")
         client.chat_postMessage(
             channel=user_id,
             text=f"❌ 登録エラー: {str(e)}"
@@ -373,10 +388,14 @@ def handle_register_invoices(ack, respond, body, client):
 
 
 @slack_app.command("/accounting-invoices")
-def handle_invoices(ack, body, client):
+def handle_invoices(ack, respond, body, client):
     """請求書一覧"""
+    ack()
     user_id = body.get("user_id")
-    ack(text="📄 請求書一覧を取得中...")
+    respond({
+        "response_type": "ephemeral",
+        "text": "📄 請求書一覧を取得中..."
+    })
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher
@@ -419,11 +438,26 @@ def handle_invoices(ack, body, client):
         )
 
 
+@slack_app.command("/accounting-email-rules")
+def handle_email_rules(ack, respond, body, client):
+    """メール取得ルール一覧（旧名称 - 後方互換）"""
+    _list_subscriptions(ack, respond, body, client)
+
+
 @slack_app.command("/accounting-subscriptions")
-def handle_subscriptions(ack, body, client):
+def handle_subscriptions(ack, respond, body, client):
     """メール取得ルール一覧"""
+    _list_subscriptions(ack, respond, body, client)
+
+
+def _list_subscriptions(ack, respond, body, client):
+    """ルール一覧の共通処理"""
+    ack()
     user_id = body.get("user_id")
-    ack(text="📧 ルール一覧を取得中...")
+    respond({
+        "response_type": "ephemeral",
+        "text": "📧 ルール一覧を取得中..."
+    })
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher
@@ -923,14 +957,22 @@ def handle_skip_file(ack, body, client):
 @slack_app.command("/accounting-reconcile")
 def handle_reconcile(ack, respond, body, client):
     """CSV照会を実行"""
+    ack()
+
     text = body.get("text", "").strip()
     user_id = body.get("user_id")
 
     if not text:
-        ack(text="❌ 期間を指定してください。\n例: `/accounting-reconcile 202602`")
+        respond({
+            "response_type": "ephemeral",
+            "text": "❌ 期間を指定してください。\n例: `/accounting-reconcile 202602`"
+        })
         return
 
-    ack(text=f"🔍 期間 `{text}` の照会を実行中...")
+    respond({
+        "response_type": "ephemeral",
+        "text": f"🔍 期間 `{text}` の照会を実行中..."
+    })
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher, parse_period
@@ -1082,23 +1124,27 @@ def handle_reconcile(ack, respond, body, client):
 @app.route("/api/slack", methods=["GET"])
 def health():
     """Health check + diagnostics"""
+    bot_token = os.environ.get("SLACK_BOT_TOKEN", "")
+    signing_secret = os.environ.get("SLACK_SIGNING_SECRET", "")
     diag = {
         "status": "running",
         "env": {
-            "SLACK_BOT_TOKEN": f"{'set' if _BOT_TOKEN else 'MISSING'} (len={len(_BOT_TOKEN)})",
-            "SLACK_SIGNING_SECRET": f"{'set' if _SIGNING_SECRET else 'MISSING'} (len={len(_SIGNING_SECRET)})",
+            "SLACK_BOT_TOKEN": "set" if bot_token else "MISSING",
+            "SLACK_SIGNING_SECRET": "set" if signing_secret else "MISSING",
             "GOOGLE_CREDENTIALS": "set" if os.environ.get("GOOGLE_CREDENTIALS") else "MISSING",
             "GEMINI_API_KEY": "set" if os.environ.get("GEMINI_API_KEY") else "MISSING",
             "SPREADSHEET_ID": "set" if os.environ.get("SPREADSHEET_ID") else "MISSING",
-            "GMAIL_USER_EMAILS": os.environ.get("GMAIL_USER_EMAILS", "MISSING"),
         },
         "commands_registered": [
             "/accounting-help",
+            "/accounting-status",
             "/accounting-add-subscription",
+            "/accounting-add-email-rule",
+            "/accounting-subscriptions",
+            "/accounting-email-rules",
             "/accounting-fetch-invoices",
             "/accounting-register-invoices",
             "/accounting-invoices",
-            "/accounting-subscriptions",
             "/accounting-reconcile",
         ]
     }
@@ -1109,36 +1155,9 @@ def health():
 @app.route("/api/slack", methods=["POST"])
 def slack_events():
     """Handle Slack events"""
-    import time as _time
-    _t0 = _time.time()
-
-    # デバッグ: リクエスト情報をログ出力
-    raw_body = request.get_data(as_text=True)
-    content_type = request.content_type or ""
-
-    # ヘッダー情報（署名検証関連）
-    sig = request.headers.get("X-Slack-Signature", "MISSING")
-    ts = request.headers.get("X-Slack-Request-Timestamp", "MISSING")
-    print(f"[slack] POST content_type={content_type}")
-    print(f"[slack] X-Slack-Signature: {sig[:20]}... X-Slack-Request-Timestamp: {ts}")
-
-    if "form" in content_type:
-        # コマンド名を抽出してログ
-        import urllib.parse
-        params = urllib.parse.parse_qs(raw_body)
-        cmd = params.get("command", ["?"])[0]
-        cmd_text = params.get("text", [""])[0]
-        print(f"[slack] Command: {cmd} {cmd_text}")
-    elif "json" in content_type:
-        print(f"[slack] JSON body: {raw_body[:300]}")
-
     try:
-        resp = slack_handler.handle(request)
-        elapsed = _time.time() - _t0
-        print(f"[slack] Response: status={resp.status_code}, elapsed={elapsed:.2f}s, body={resp.get_data(as_text=True)[:300]}")
-        return resp
+        return slack_handler.handle(request)
     except Exception as e:
-        elapsed = _time.time() - _t0
-        print(f"[slack] HANDLER ERROR ({elapsed:.2f}s): {type(e).__name__}: {e}")
+        print(f"[slack] ERROR: {type(e).__name__}: {e}")
         traceback.print_exc()
         return Response("Internal Server Error", status=500)

@@ -18,12 +18,24 @@ features:
       description: Show help
       url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
+    - command: /accounting-status
+      description: Show current month accounting status
+      url: https://accounting-automation-nine.vercel.app/api/slack
+      should_escape: false
     - command: /accounting-add-subscription
       description: Add email fetch rule
       url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
+    - command: /accounting-add-email-rule
+      description: Add email fetch rule (alias)
+      url: https://accounting-automation-nine.vercel.app/api/slack
+      should_escape: false
     - command: /accounting-subscriptions
       description: List and manage email fetch rules
+      url: https://accounting-automation-nine.vercel.app/api/slack
+      should_escape: false
+    - command: /accounting-email-rules
+      description: List and manage email fetch rules (alias)
       url: https://accounting-automation-nine.vercel.app/api/slack
       should_escape: false
     - command: /accounting-fetch-invoices
