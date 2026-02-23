@@ -1168,8 +1168,9 @@ class InvoiceFetcher:
                 if len(row) >= 4:
                     inv_date = row[3] if len(row) > 3 else ""
 
-                    # 日付からYYYY-MMを抽出
-                    inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
+                    # 日付を正規化してYYYY-MMを抽出
+                    normalized_date = self._normalize_date(inv_date)
+                    inv_month = normalized_date[:7] if len(normalized_date) >= 7 else ""
 
                     # 期間指定がない場合は全件、ある場合は月が一致するもの
                     if not period_code or inv_month in target_months:
@@ -1227,37 +1228,52 @@ class InvoiceFetcher:
             return date1 == date2
 
     @staticmethod
+    def _normalize_text(text: str) -> str:
+        """全角/半角を統一し、スペースを除去して正規化"""
+        import unicodedata
+        # NFKC正規化: 半角カナ→全角カナ、全角英数→半角英数
+        text = unicodedata.normalize("NFKC", text)
+        # 全種スペース除去
+        text = text.replace(" ", "").replace("\u3000", "").replace("\t", "")
+        return text.lower().strip()
+
+    @staticmethod
     def _vendors_match(vendor1: str, vendor2: str) -> bool:
-        """ベンダー名の柔軟なマッチング（部分一致 + 頭文字一致）"""
+        """ベンダー名の柔軟なマッチング（部分一致 + 頭文字一致 + 全角半角対応）"""
         if not vendor1 or not vendor2:
             return False
-        v1 = vendor1.lower().strip()
-        v2 = vendor2.lower().strip()
+        import unicodedata
+        # NFKC正規化 + スペース除去
+        v1 = unicodedata.normalize("NFKC", vendor1).replace(" ", "").replace("\u3000", "").replace("\t", "").lower().strip()
+        v2 = unicodedata.normalize("NFKC", vendor2).replace(" ", "").replace("\u3000", "").replace("\t", "").lower().strip()
         if not v1 or not v2:
             return False
-        # 部分文字列一致
+        # 部分文字列一致（スペース除去済みで比較）
         if v1 in v2 or v2 in v1:
             return True
         # 頭文字一致（例: "AWS" ↔ "Amazon Web Services"）
-        words1 = v1.split()
-        words2 = v2.split()
-        if len(words1) == 1 and len(v1) <= 5 and len(words2) > 1:
-            initials = "".join(w[0] for w in words2 if w)
+        # 頭文字比較にはスペース区切りが必要なので元の文字列を使用
+        w1_orig = unicodedata.normalize("NFKC", vendor1).lower().split()
+        w2_orig = unicodedata.normalize("NFKC", vendor2).lower().split()
+        if len(w1_orig) == 1 and len(v1) <= 5 and len(w2_orig) > 1:
+            initials = "".join(w[0] for w in w2_orig if w)
             if v1 == initials:
                 return True
-        if len(words2) == 1 and len(v2) <= 5 and len(words1) > 1:
-            initials = "".join(w[0] for w in words1 if w)
+        if len(w2_orig) == 1 and len(v2) <= 5 and len(w1_orig) > 1:
+            initials = "".join(w[0] for w in w1_orig if w)
             if v2 == initials:
                 return True
         return False
 
     @staticmethod
     def _parse_amount(amount_str) -> int | None:
-        """金額文字列をintに変換。変換できない場合はNone"""
+        """金額文字列をintに変換。全角数字にも対応。変換できない場合はNone"""
         if not amount_str:
             return None
         try:
-            return int(str(amount_str).replace(",", "").replace("¥", "").replace("円", "").strip())
+            import unicodedata
+            s = unicodedata.normalize("NFKC", str(amount_str))
+            return int(s.replace(",", "").replace("¥", "").replace("円", "").replace("￥", "").strip())
         except (ValueError, TypeError):
             return None
 
@@ -1271,7 +1287,7 @@ class InvoiceFetcher:
         """
         invoices = self.get_invoices_for_period(period_code)
         rules = self.get_email_rules()
-        rule_names = {r["name"].lower() for r in rules}
+        rule_names = {self._normalize_text(r["name"]) for r in rules}
 
         matched = []
         used_invoices = set()
