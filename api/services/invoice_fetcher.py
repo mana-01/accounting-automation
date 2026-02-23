@@ -57,11 +57,11 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
 
         data = json.loads(text)
 
-        # 金額を整数に正規化
+        # 金額を整数に正規化（Geminiがfloatで返す場合にも対応）
         amount = data.get("amount")
         if amount is not None:
             try:
-                amount = int(str(amount).replace(",", "").replace("¥", "").replace("￥", ""))
+                amount = int(float(str(amount).replace(",", "").replace("¥", "").replace("￥", "")))
             except (ValueError, TypeError):
                 amount = None
 
@@ -1255,9 +1255,9 @@ class InvoiceFetcher:
         name = re.sub(r"^(振込|pe|デビット利用|クレジット|口座振替|引落|自振)\s*", "", name, flags=re.IGNORECASE)
         # 銀行名除去（カタカナの銀行名: ミツビシユーエフジエイ、ミツイスミトモ等）
         name = re.sub(
-            r"^(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネツト|"
+            r"^(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネット|スミシンエスビーアイネツト|"
             r"ラクテン|ナント|キヨウトシンキン|ジユウハチ|リソナ|ゆうちょ|ユウチヨ|"
-            r"ミツイスミトモギンコウ|ミズホギンコウ|smbc|mufg|sbi)\s*",
+            r"ミツイスミトモギンコウ|ミズホギンコウ|ミツビシUFJシンタク|smbc|mufg|sbi)\s*",
             "", name, flags=re.IGNORECASE
         )
         # 会社種別除去
@@ -1304,13 +1304,14 @@ class InvoiceFetcher:
 
     @staticmethod
     def _parse_amount(amount_str) -> int | None:
-        """金額文字列をintに変換。全角数字にも対応。変換できない場合はNone"""
+        """金額文字列をintに変換。全角数字・float文字列にも対応。変換できない場合はNone"""
         if not amount_str:
             return None
         try:
             import unicodedata
             s = unicodedata.normalize("NFKC", str(amount_str))
-            return int(s.replace(",", "").replace("¥", "").replace("円", "").replace("￥", "").replace("$", "").strip())
+            s = s.replace(",", "").replace("¥", "").replace("円", "").replace("￥", "").replace("$", "").strip()
+            return int(float(s))
         except (ValueError, TypeError):
             return None
 
@@ -1375,7 +1376,7 @@ class InvoiceFetcher:
                     unmatched_tx_indices.discard(tx_idx)
                     break
 
-        # --- ステップ2.5: USD請求書は名前一致 + 同月でマッチ（金額不問） ---
+        # --- ステップ2.5: USD請求書 or 金額なし請求書は名前一致 + 同月でマッチ（金額不問） ---
         for tx_idx in sorted(unmatched_tx_indices):
             tx = transactions[tx_idx]
             tx_date = self._normalize_date(tx.get("date", ""))
@@ -1384,7 +1385,10 @@ class InvoiceFetcher:
             for inv_idx, inv in enumerate(invoices):
                 if inv_idx in used_invoices:
                     continue
-                if inv.get("currency", "JPY") != "USD":
+                inv_amount = self._parse_amount(inv.get("amount", ""))
+                is_usd = inv.get("currency", "JPY") == "USD"
+                is_amount_empty = inv_amount is None
+                if not is_usd and not is_amount_empty:
                     continue
                 inv_date = self._normalize_date(inv.get("date", ""))
                 inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
@@ -1410,8 +1414,11 @@ class InvoiceFetcher:
 
             for inv_idx in used_invoices:
                 inv = invoices[inv_idx]
-                # USD請求書: 名前+月で重複判定
-                if inv.get("currency", "JPY") == "USD":
+                inv_amount = self._parse_amount(inv.get("amount", ""))
+                is_usd = inv.get("currency", "JPY") == "USD"
+                is_amount_empty = inv_amount is None
+                # USD請求書 or 金額なし請求書: 名前+月で重複判定
+                if is_usd or is_amount_empty:
                     inv_date = self._normalize_date(inv.get("date", ""))
                     inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
                     if tx_month and inv_month and tx_month == inv_month:
