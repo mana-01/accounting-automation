@@ -68,7 +68,7 @@ def handle_status(ack, respond):
 
         result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="invoices!A2:H1000"
+            range="invoices!A2:L1000"
         ).execute()
         invoices = result.get("values", [])
 
@@ -402,7 +402,7 @@ def handle_invoices(ack, respond, body, client):
 
         result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="invoices!A2:H100"
+            range="invoices!A2:L100"
         ).execute()
 
         rows = result.get("values", [])
@@ -414,12 +414,15 @@ def handle_invoices(ack, respond, body, client):
             )
             return
 
+        # SHEET_HEADERS: id(0), subscription_id(1), subscription_name(2),
+        # amount(3), currency(4), invoice_date(5), due_date(6),
+        # drive_file_id(7), drive_url(8), source_type(9), status(10), created_at(11)
         invoice_list = ""
         for row in rows[-10:]:  # 最新10件
-            vendor = row[1] if len(row) > 1 else "不明"
-            amount = row[2] if len(row) > 2 else "-"
-            date = row[3] if len(row) > 3 else ""
-            url = row[5] if len(row) > 5 else ""
+            vendor = row[2] if len(row) > 2 else "不明"
+            amount = row[3] if len(row) > 3 else "-"
+            date = row[5] if len(row) > 5 else ""
+            url = row[8] if len(row) > 8 else ""
 
             if url:
                 invoice_list += f"\n• <{url}|{vendor}> - {date} (¥{amount})"

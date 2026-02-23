@@ -613,7 +613,7 @@ class InvoiceFetcher:
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="invoices!F2:F1000"
+                range="invoices!I2:I1000"
             ).execute()
             rows = result.get("values", [])
             return any(row[0] == drive_url for row in rows if row)
@@ -631,19 +631,23 @@ class InvoiceFetcher:
             return False
 
         row = [
-            invoice_data.get("id", ""),
-            invoice_data.get("vendor", ""),
-            invoice_data.get("amount", ""),
-            invoice_data.get("date", ""),
-            invoice_data.get("source", ""),
-            drive_url,
-            invoice_data.get("status", "pending"),
-            datetime.now().isoformat()
+            invoice_data.get("id", ""),                # A: id
+            "",                                         # B: subscription_id
+            invoice_data.get("vendor", ""),             # C: subscription_name
+            invoice_data.get("amount", ""),             # D: amount
+            "JPY",                                      # E: currency
+            invoice_data.get("date", ""),               # F: invoice_date
+            "",                                         # G: due_date
+            "",                                         # H: drive_file_id
+            drive_url,                                  # I: drive_url
+            invoice_data.get("source", ""),             # J: source_type
+            invoice_data.get("status", "pending"),      # K: status
+            datetime.now().isoformat()                  # L: created_at
         ]
 
         self.sheets.spreadsheets().values().append(
             spreadsheetId=self.spreadsheet_id,
-            range="invoices!A:H",
+            range="invoices!A:L",
             valueInputOption="USER_ENTERED",
             body={"values": [row]}
         ).execute()
@@ -1079,7 +1083,7 @@ class InvoiceFetcher:
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="invoices!A2:H1000"
+                range="invoices!A2:L1000"
             ).execute()
 
             rows = result.get("values", [])
@@ -1092,9 +1096,12 @@ class InvoiceFetcher:
                 # YYYY-MM形式で対象月を追加
                 target_months.add(f"{p['year']}-{p['month']:02d}")
 
+            # SHEET_HEADERS: id(0), subscription_id(1), subscription_name(2),
+            # amount(3), currency(4), invoice_date(5), due_date(6),
+            # drive_file_id(7), drive_url(8), source_type(9), status(10), created_at(11)
             for row in rows:
-                if len(row) >= 4:
-                    inv_date = row[3] if len(row) > 3 else ""
+                if len(row) >= 6:
+                    inv_date = row[5] if len(row) > 5 else ""
 
                     # 日付からYYYY-MMを抽出
                     inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
@@ -1103,12 +1110,12 @@ class InvoiceFetcher:
                     if not period_code or inv_month in target_months:
                         invoices.append({
                             "id": row[0] if len(row) > 0 else "",
-                            "vendor": row[1] if len(row) > 1 else "",
-                            "amount": row[2] if len(row) > 2 else "",
+                            "vendor": row[2] if len(row) > 2 else "",
+                            "amount": row[3] if len(row) > 3 else "",
                             "date": inv_date,
-                            "source": row[4] if len(row) > 4 else "",
-                            "drive_url": row[5] if len(row) > 5 else "",
-                            "status": row[6] if len(row) > 6 else "pending",
+                            "source": row[9] if len(row) > 9 else "",
+                            "drive_url": row[8] if len(row) > 8 else "",
+                            "status": row[10] if len(row) > 10 else "pending",
                             "type": "credit"
                         })
 
