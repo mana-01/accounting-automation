@@ -137,86 +137,103 @@ def handle_status(ack, respond):
 
 
 @slack_app.command("/accounting-add-subscription")
-def handle_add_subscription(ack, client, body):
+def handle_add_subscription(ack, client, body, respond):
     """メール取得ルール追加モーダル（新名称）"""
     ack()
-    _open_add_rule_modal(client, body)
+    _open_add_rule_modal(client, body, respond)
 
 
 @slack_app.command("/accounting-add-email-rule")
-def handle_add_email_rule(ack, client, body):
+def handle_add_email_rule(ack, client, body, respond):
     """メール取得ルール追加モーダル（旧名称 - 後方互換）"""
     ack()
-    _open_add_rule_modal(client, body)
+    _open_add_rule_modal(client, body, respond)
 
 
-def _open_add_rule_modal(client, body):
-    """ルール追加モーダルを開く共通関数"""
-    client.views_open(
-        trigger_id=body["trigger_id"],
-        view={
-            "type": "modal",
-            "callback_id": "add_email_rule_modal",
-            "title": {"type": "plain_text", "text": "メール取得ルール追加"},
-            "submit": {"type": "plain_text", "text": "追加"},
-            "close": {"type": "plain_text", "text": "キャンセル"},
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "name_block",
-                    "label": {"type": "plain_text", "text": "ルール名（サービス名）"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "name_input",
-                        "placeholder": {"type": "plain_text", "text": "例: AWS, GitHub, Notion"}
+# モーダル定義（モジュール読み込み時に構築してコールドスタートの影響を最小化）
+_ADD_RULE_MODAL_VIEW = {
+    "type": "modal",
+    "callback_id": "add_email_rule_modal",
+    "title": {"type": "plain_text", "text": "メール取得ルール追加"},
+    "submit": {"type": "plain_text", "text": "追加"},
+    "close": {"type": "plain_text", "text": "キャンセル"},
+    "blocks": [
+        {
+            "type": "input",
+            "block_id": "name_block",
+            "label": {"type": "plain_text", "text": "ルール名（サービス名）"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "name_input",
+                "placeholder": {"type": "plain_text", "text": "例: AWS, GitHub, Notion"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "sender_block",
+            "label": {"type": "plain_text", "text": "送信者メールアドレス"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "sender_input",
+                "placeholder": {"type": "plain_text", "text": "例: billing@aws.amazon.com"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "subject_block",
+            "label": {"type": "plain_text", "text": "件名キーワード"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "subject_input",
+                "placeholder": {"type": "plain_text", "text": "例: Invoice, 請求書, ご利用明細"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "type_block",
+            "label": {"type": "plain_text", "text": "取得タイプ"},
+            "element": {
+                "type": "static_select",
+                "action_id": "type_select",
+                "options": [
+                    {
+                        "text": {"type": "plain_text", "text": "PDF添付ファイル"},
+                        "value": "attachment"
+                    },
+                    {
+                        "text": {"type": "plain_text", "text": "メール内リンク"},
+                        "value": "link"
                     }
-                },
-                {
-                    "type": "input",
-                    "block_id": "sender_block",
-                    "label": {"type": "plain_text", "text": "送信者メールアドレス"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "sender_input",
-                        "placeholder": {"type": "plain_text", "text": "例: billing@aws.amazon.com"}
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "subject_block",
-                    "label": {"type": "plain_text", "text": "件名キーワード"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "subject_input",
-                        "placeholder": {"type": "plain_text", "text": "例: Invoice, 請求書, ご利用明細"}
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "type_block",
-                    "label": {"type": "plain_text", "text": "取得タイプ"},
-                    "element": {
-                        "type": "static_select",
-                        "action_id": "type_select",
-                        "options": [
-                            {
-                                "text": {"type": "plain_text", "text": "PDF添付ファイル"},
-                                "value": "attachment"
-                            },
-                            {
-                                "text": {"type": "plain_text", "text": "メール内リンク"},
-                                "value": "link"
-                            }
-                        ],
-                        "initial_option": {
-                            "text": {"type": "plain_text", "text": "PDF添付ファイル"},
-                            "value": "attachment"
-                        }
-                    }
+                ],
+                "initial_option": {
+                    "text": {"type": "plain_text", "text": "PDF添付ファイル"},
+                    "value": "attachment"
                 }
-            ]
+            }
         }
-    )
+    ]
+}
+
+
+def _open_add_rule_modal(client, body, respond):
+    """ルール追加モーダルを開く共通関数"""
+    try:
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=_ADD_RULE_MODAL_VIEW,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "expired_trigger_id" in error_msg or "trigger" in error_msg.lower():
+            respond({
+                "response_type": "ephemeral",
+                "text": "サーバー起動に時間がかかりました。もう一度 `/accounting-add-subscription` を実行してください。"
+            })
+        else:
+            respond({
+                "response_type": "ephemeral",
+                "text": f"フォームの表示に失敗しました: {error_msg}"
+            })
 
 
 @slack_app.view("add_email_rule_modal")
