@@ -625,14 +625,60 @@ class InvoiceFetcher:
         except Exception:
             return False
 
+    def _is_invoice_duplicate(self, vendor: str, amount_str: str, date: str) -> bool:
+        """金額一致 かつ (日付一致 or 名前部分一致) で既存invoiceとの重複を判定"""
+        new_amount = self._parse_amount(amount_str)
+        if new_amount is None:
+            return False
+
+        new_date = self._normalize_date(date) if date else ""
+        new_vendor_lower = vendor.lower().strip() if vendor else ""
+
+        try:
+            result = self.sheets.spreadsheets().values().get(
+                spreadsheetId=self.spreadsheet_id,
+                range="invoices!B2:D1000"
+            ).execute()
+            rows = result.get("values", [])
+
+            # カラム: vendor(B=0), amount(C=1), date(D=2)
+            for row in rows:
+                if len(row) < 2:
+                    continue
+                existing_amount = self._parse_amount(row[1] if len(row) > 1 else "")
+                if existing_amount is None or existing_amount != new_amount:
+                    continue
+
+                # 金額が一致 → 日付 or 名前で追加チェック
+                existing_date = self._normalize_date(row[2]) if len(row) > 2 and row[2] else ""
+                if new_date and existing_date and new_date == existing_date:
+                    return True
+
+                existing_vendor_lower = (row[0] if len(row) > 0 else "").lower().strip()
+                if new_vendor_lower and existing_vendor_lower:
+                    if existing_vendor_lower in new_vendor_lower or new_vendor_lower in existing_vendor_lower:
+                        return True
+
+            return False
+        except Exception:
+            return False
+
     def record_invoice(self, invoice_data: dict) -> bool:
         """
         請求書情報をSpreadsheetに記録。
-        重複（同じdrive_url）がある場合はスキップしてFalseを返す。
+        重複（同じdrive_url、または金額+日付/名前一致）がある場合はスキップしてFalseを返す。
         """
         drive_url = invoice_data.get("drive_url", "")
         if drive_url and self._is_invoice_registered(drive_url):
-            print(f"[record_invoice] skipped duplicate: {drive_url}")
+            print(f"[record_invoice] skipped duplicate (drive_url): {drive_url}")
+            return False
+
+        # 金額 + (日付一致 or 名前部分一致) で重複判定
+        vendor = invoice_data.get("vendor", "")
+        amount = invoice_data.get("amount", "")
+        date = invoice_data.get("date", "")
+        if self._is_invoice_duplicate(vendor, amount, date):
+            print(f"[record_invoice] skipped duplicate (amount+date/vendor): {vendor} {amount} {date}")
             return False
 
         row = [
