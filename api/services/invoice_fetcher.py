@@ -1121,7 +1121,7 @@ class InvoiceFetcher:
                 target_months.add(f"{p['year']}-{p['month']:02d}")
 
             # カラム: id(0), vendor(1), amount(2), date(3), source(4), drive_url(5), status(6), created_at(7)
-            for row in rows:
+            for row_idx, row in enumerate(rows):
                 if len(row) >= 4:
                     inv_date = row[3] if len(row) > 3 else ""
 
@@ -1138,7 +1138,8 @@ class InvoiceFetcher:
                             "source": row[4] if len(row) > 4 else "",
                             "drive_url": row[5] if len(row) > 5 else "",
                             "status": row[6] if len(row) > 6 else "pending",
-                            "type": "credit"
+                            "type": "credit",
+                            "_sheet_row": row_idx + 2  # スプレッドシートの実際の行番号（ヘッダー行=1を考慮）
                         })
 
             return invoices
@@ -1152,10 +1153,16 @@ class InvoiceFetcher:
         rules = self.get_email_rules()
         rule_names = {r["name"].lower() for r in rules}
 
+        # 既にmatchedの請求書はスキップ対象としてマーク
+        already_matched = set()
+        for idx, inv in enumerate(invoices):
+            if inv.get("status") == "matched":
+                already_matched.add(idx)
+
         matched = []
         missing = []
         unregistered_vendors = []
-        used_invoices = set()  # 同じ請求書を複数回マッチさせない
+        used_invoices = set(already_matched)  # matched済みの請求書は使用済みとして扱う
 
         for tx in transactions:
             tx_vendor_lower = tx["vendor"].lower()
@@ -1245,7 +1252,8 @@ class InvoiceFetcher:
             "unregistered_vendors": unregistered_vendors,
             "total_transactions": len(transactions),
             "matched_count": len(matched),
-            "missing_count": len(missing)
+            "missing_count": len(missing),
+            "already_matched_count": len(already_matched)
         }
 
 
