@@ -11,7 +11,7 @@ from io import BytesIO
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 
 def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
@@ -185,8 +185,13 @@ def parse_invoice_filename(filename: str) -> dict:
     except (ValueError, TypeError):
         pass
 
-    # 日付の簡易バリデーション (YYYY-MM-DD)
-    if not re.match(r'^\d{4}-\d{2}-\d{2}$', date):
+    # 日付の簡易バリデーション (YYYY-MM-DD or YYYYMMDD)
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', date):
+        pass  # already in YYYY-MM-DD format
+    elif re.match(r'^\d{8}$', date):
+        # YYYYMMDD → YYYY-MM-DD に正規化
+        date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    else:
         date = None
 
     return {
@@ -887,7 +892,7 @@ class InvoiceFetcher:
         """
         指定期間のDriveフォルダ内の既存PDFを走査し、
         ファイル名（{請求日}_{請求元}_{金額}.pdf）からデータを抽出してinvoicesシートに登録する。
-        Gemini解析は不要 — ファイル名がSingle Source of Truth。
+        ファイル名から日付・金額・請求元が取得できない場合はGemini APIでPDFを解析する。
         """
         periods = parse_period(period_str)
         results = {
@@ -932,11 +937,24 @@ class InvoiceFetcher:
                             continue
 
                         try:
-                            # ファイル名から請求データを抽出（Gemini不要）
+                            # ファイル名から請求データを抽出
                             parsed = parse_invoice_filename(pdf_file["name"])
                             vendor = parsed.get("vendor") or pdf_file["name"]
                             amount = parsed.get("amount")
                             inv_date = parsed.get("date") or ""
+                            summary = ""
+
+                            # ファイル名から日付が取得できない場合、Geminiで解析
+                            if not inv_date:
+                                try:
+                                    pdf_data = self._download_pdf_from_drive(pdf_file["id"])
+                                    pdf_info = extract_invoice_data_with_gemini(pdf_data)
+                                    inv_date = pdf_info.get("date") or ""
+                                    vendor = pdf_info.get("vendor") or vendor
+                                    amount = pdf_info.get("amount") or amount
+                                    summary = pdf_info.get("summary") or ""
+                                except Exception as gemini_err:
+                                    print(f"Gemini extraction failed for {pdf_file['name']}: {gemini_err}")
 
                             invoice_data = {
                                 "id": f"inv_{datetime.now().timestamp()}",
@@ -946,7 +964,7 @@ class InvoiceFetcher:
                                 "period": period_code,
                                 "source": "drive_scan",
                                 "drive_url": drive_url,
-                                "summary": "",
+                                "summary": summary,
                                 "type": invoice_type,
                                 "status": "pending"
                             }
@@ -989,6 +1007,16 @@ class InvoiceFetcher:
             orderBy="name"
         ).execute()
         return results.get("files", [])
+
+    def _download_pdf_from_drive(self, file_id: str) -> bytes:
+        """DriveからPDFファイルのバイナリデータをダウンロードする"""
+        request = self.drive.files().get_media(fileId=file_id)
+        buf = BytesIO()
+        downloader = MediaIoBaseDownload(buf, request)
+        done = False
+        while not done:
+            _, done = downloader.next_chunk()
+        return buf.getvalue()
 
     def parse_saison_csv(self, csv_content: str) -> list[dict]:
         """SaisonカードCSVをパース"""
