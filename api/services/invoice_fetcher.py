@@ -1231,37 +1231,62 @@ class InvoiceFetcher:
     def _normalize_text(text: str) -> str:
         """全角/半角を統一し、スペースを除去して正規化"""
         import unicodedata
-        # NFKC正規化: 半角カナ→全角カナ、全角英数→半角英数
         text = unicodedata.normalize("NFKC", text)
-        # 全種スペース除去
-        text = text.replace(" ", "").replace("\u3000", "").replace("\t", "")
+        text = "".join(text.split())
         return text.lower().strip()
 
     @staticmethod
-    def _vendors_match(vendor1: str, vendor2: str) -> bool:
-        """ベンダー名の柔軟なマッチング（部分一致 + 頭文字一致 + 全角半角対応）"""
+    def _strip_vendor_noise(name: str) -> str:
+        """ベンダー名からCSV取引種別・銀行名・会社種別などのノイズを除去"""
+        import re
+        # CSV摘要のプレフィックス除去（振込、PE、デビット利用、etc.）
+        name = re.sub(r"^(振込|pe|デビット利用|クレジット|口座振替|引落|自振)\s*", "", name, flags=re.IGNORECASE)
+        # 銀行名除去（カタカナの銀行名: ミツビシユーエフジエイ、ミツイスミトモ等）
+        name = re.sub(
+            r"^(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネツト|"
+            r"ラクテン|ナント|キヨウトシンキン|ジユウハチ|リソナ|ゆうちょ|ユウチヨ|"
+            r"ミツイスミトモギンコウ|ミズホギンコウ|smbc|mufg|sbi)\s*",
+            "", name, flags=re.IGNORECASE
+        )
+        # 会社種別除去
+        name = re.sub(r"(株式会社|有限会社|合同会社|\(株\)|（株）|inc\.?|co\.?,?\s*ltd\.?|llc|corp\.?)", "", name, flags=re.IGNORECASE)
+        # 承認番号・長い数字除去
+        name = re.sub(r"承認番号[：:]?\s*\d+", "", name)
+        name = re.sub(r"\d{8,}", "", name)
+        return name.strip()
+
+    @classmethod
+    def _vendors_match(cls, vendor1: str, vendor2: str) -> bool:
+        """ベンダー名の柔軟なマッチング（部分一致 + ノイズ除去 + 頭文字一致 + 全角半角対応）"""
         if not vendor1 or not vendor2:
             return False
         import unicodedata
         # NFKC正規化 + スペース除去
-        v1 = unicodedata.normalize("NFKC", vendor1).replace(" ", "").replace("\u3000", "").replace("\t", "").lower().strip()
-        v2 = unicodedata.normalize("NFKC", vendor2).replace(" ", "").replace("\u3000", "").replace("\t", "").lower().strip()
-        if not v1 or not v2:
+        v1 = unicodedata.normalize("NFKC", vendor1)
+        v2 = unicodedata.normalize("NFKC", vendor2)
+        v1_clean = "".join(v1.split()).lower()
+        v2_clean = "".join(v2.split()).lower()
+        if not v1_clean or not v2_clean:
             return False
-        # 部分文字列一致（スペース除去済みで比較）
-        if v1 in v2 or v2 in v1:
+        # 1. 部分文字列一致（スペース除去済みで比較）
+        if v1_clean in v2_clean or v2_clean in v1_clean:
             return True
-        # 頭文字一致（例: "AWS" ↔ "Amazon Web Services"）
-        # 頭文字比較にはスペース区切りが必要なので元の文字列を使用
-        w1_orig = unicodedata.normalize("NFKC", vendor1).lower().split()
-        w2_orig = unicodedata.normalize("NFKC", vendor2).lower().split()
-        if len(w1_orig) == 1 and len(v1) <= 5 and len(w2_orig) > 1:
-            initials = "".join(w[0] for w in w2_orig if w)
-            if v1 == initials:
+        # 2. ノイズ除去後の部分文字列一致
+        v1_stripped = "".join(cls._strip_vendor_noise(v1).split()).lower()
+        v2_stripped = "".join(cls._strip_vendor_noise(v2).split()).lower()
+        if v1_stripped and v2_stripped:
+            if v1_stripped in v2_stripped or v2_stripped in v1_stripped:
                 return True
-        if len(w2_orig) == 1 and len(v2) <= 5 and len(w1_orig) > 1:
+        # 3. 頭文字一致（例: "AWS" ↔ "Amazon Web Services"）
+        w1_orig = v1.lower().split()
+        w2_orig = v2.lower().split()
+        if len(w1_orig) == 1 and len(v1_clean) <= 5 and len(w2_orig) > 1:
+            initials = "".join(w[0] for w in w2_orig if w)
+            if v1_clean == initials:
+                return True
+        if len(w2_orig) == 1 and len(v2_clean) <= 5 and len(w1_orig) > 1:
             initials = "".join(w[0] for w in w1_orig if w)
-            if v2 == initials:
+            if v2_clean == initials:
                 return True
         return False
 
