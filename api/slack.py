@@ -138,19 +138,112 @@ def handle_status(ack, respond):
 
 @slack_app.command("/accounting-add-subscription")
 def handle_add_subscription(ack, client, body, respond):
-    """メール取得ルール追加モーダル（新名称）"""
+    """サブスクリプション登録モーダルを表示"""
     ack()
-    _open_add_rule_modal(client, body, respond)
+    _open_add_subscription_modal(client, body, respond)
 
 
 @slack_app.command("/accounting-add-email-rule")
 def handle_add_email_rule(ack, client, body, respond):
-    """メール取得ルール追加モーダル（旧名称 - 後方互換）"""
+    """メール取得ルール追加モーダル"""
     ack()
     _open_add_rule_modal(client, body, respond)
 
 
 # モーダル定義（モジュール読み込み時に構築してコールドスタートの影響を最小化）
+_ADD_SUBSCRIPTION_MODAL_VIEW = {
+    "type": "modal",
+    "callback_id": "add_subscription_modal",
+    "title": {"type": "plain_text", "text": "サブスク登録"},
+    "submit": {"type": "plain_text", "text": "登録"},
+    "close": {"type": "plain_text", "text": "キャンセル"},
+    "blocks": [
+        {
+            "type": "input",
+            "block_id": "name_block",
+            "label": {"type": "plain_text", "text": "サービス名"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "name_input",
+                "placeholder": {"type": "plain_text", "text": "例: AWS"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "vendor_block",
+            "label": {"type": "plain_text", "text": "ベンダー名"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "vendor_input",
+                "placeholder": {"type": "plain_text", "text": "例: Amazon Web Services"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "amount_block",
+            "label": {"type": "plain_text", "text": "金額 (円)"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "amount_input",
+                "placeholder": {"type": "plain_text", "text": "例: 10000"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "cycle_block",
+            "label": {"type": "plain_text", "text": "請求サイクル"},
+            "element": {
+                "type": "static_select",
+                "action_id": "cycle_select",
+                "options": [
+                    {"text": {"type": "plain_text", "text": "月次"}, "value": "monthly"},
+                    {"text": {"type": "plain_text", "text": "年次"}, "value": "yearly"},
+                    {"text": {"type": "plain_text", "text": "四半期"}, "value": "quarterly"},
+                ]
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "payment_block",
+            "label": {"type": "plain_text", "text": "支払方法"},
+            "element": {
+                "type": "static_select",
+                "action_id": "payment_select",
+                "options": [
+                    {"text": {"type": "plain_text", "text": "カード"}, "value": "card"},
+                    {"text": {"type": "plain_text", "text": "銀行振込"}, "value": "bank"},
+                ]
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "fetch_block",
+            "label": {"type": "plain_text", "text": "請求書取得方法"},
+            "element": {
+                "type": "static_select",
+                "action_id": "fetch_select",
+                "options": [
+                    {"text": {"type": "plain_text", "text": "メール (PDF添付)"}, "value": "email_pdf"},
+                    {"text": {"type": "plain_text", "text": "メール (リンク)"}, "value": "email_link"},
+                    {"text": {"type": "plain_text", "text": "ログイン取得"}, "value": "login"},
+                    {"text": {"type": "plain_text", "text": "手動"}, "value": "manual"},
+                ]
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "email_subject_block",
+            "label": {"type": "plain_text", "text": "メール件名パターン (オプション)"},
+            "optional": True,
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "email_subject_input",
+                "placeholder": {"type": "plain_text", "text": "例: AWS請求書"}
+            }
+        }
+    ]
+}
+
 _ADD_RULE_MODAL_VIEW = {
     "type": "modal",
     "callback_id": "add_email_rule_modal",
@@ -215,12 +308,12 @@ _ADD_RULE_MODAL_VIEW = {
 }
 
 
-def _open_add_rule_modal(client, body, respond):
-    """ルール追加モーダルを開く共通関数"""
+def _open_add_subscription_modal(client, body, respond):
+    """サブスク登録モーダルを開く"""
     try:
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=_ADD_RULE_MODAL_VIEW,
+            view=_ADD_SUBSCRIPTION_MODAL_VIEW,
         )
     except Exception as e:
         error_msg = str(e)
@@ -234,6 +327,107 @@ def _open_add_rule_modal(client, body, respond):
                 "response_type": "ephemeral",
                 "text": f"フォームの表示に失敗しました: {error_msg}"
             })
+
+
+def _open_add_rule_modal(client, body, respond):
+    """ルール追加モーダルを開く"""
+    try:
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=_ADD_RULE_MODAL_VIEW,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "expired_trigger_id" in error_msg or "trigger" in error_msg.lower():
+            respond({
+                "response_type": "ephemeral",
+                "text": "サーバー起動に時間がかかりました。もう一度 `/accounting-add-email-rule` を実行してください。"
+            })
+        else:
+            respond({
+                "response_type": "ephemeral",
+                "text": f"フォームの表示に失敗しました: {error_msg}"
+            })
+
+
+@slack_app.view("add_subscription_modal")
+def handle_add_subscription_submission(ack, body, client, view):
+    """サブスクリプション登録の処理"""
+    ack()
+
+    try:
+        from datetime import datetime
+        import uuid
+
+        values = view["state"]["values"]
+        name = values["name_block"]["name_input"]["value"]
+        vendor = values["vendor_block"]["vendor_input"]["value"]
+        amount_str = values["amount_block"]["amount_input"]["value"]
+        cycle = values["cycle_block"]["cycle_select"]["selected_option"]["value"]
+        payment = values["payment_block"]["payment_select"]["selected_option"]["value"]
+        fetch = values["fetch_block"]["fetch_select"]["selected_option"]["value"]
+        email_subject = values["email_subject_block"]["email_subject_input"].get("value") or ""
+
+        # 金額をパース
+        try:
+            amount = float(amount_str.replace(",", "").replace("¥", "").replace("円", ""))
+        except ValueError:
+            user_id = body["user"]["id"]
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"❌ 金額の形式が正しくありません: {amount_str}"
+            )
+            return
+
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        now = datetime.now().isoformat()
+        row = [
+            str(uuid.uuid4()),  # id
+            name,               # name
+            vendor,             # vendor
+            str(amount),        # amount
+            "JPY",              # currency
+            "1",                # billing_day
+            cycle,              # billing_cycle
+            payment,            # payment_method
+            fetch,              # fetch_method
+            email_subject,      # email_subject
+            "",                 # login_url
+            "true",             # is_active
+            now,                # created_at
+            now,                # updated_at
+        ]
+
+        invoice_fetcher.sheets.spreadsheets().values().append(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="subscriptions!A:N",
+            valueInputOption="USER_ENTERED",
+            body={"values": [row]}
+        ).execute()
+
+        cycle_text = {"monthly": "月次", "yearly": "年次", "quarterly": "四半期"}.get(cycle, cycle)
+        payment_text = {"card": "カード", "bank": "銀行振込"}.get(payment, payment)
+        fetch_text = {"email_pdf": "メール(PDF)", "email_link": "メール(リンク)", "login": "ログイン", "manual": "手動"}.get(fetch, fetch)
+
+        user_id = body["user"]["id"]
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"""✅ サブスクリプションを登録しました！
+
+• *サービス名*: {name}
+• *ベンダー*: {vendor}
+• *金額*: ¥{amount:,.0f} / {cycle_text}
+• *支払方法*: {payment_text}
+• *取得方法*: {fetch_text}"""
+        )
+
+    except Exception as e:
+        user_id = body["user"]["id"]
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"❌ サブスク登録エラー: {str(e)}"
+        )
 
 
 @slack_app.view("add_email_rule_modal")
@@ -846,6 +1040,7 @@ def _process_csv(body, client, csv_type: str):
             return
 
         # Spreadsheetに保存 (csv_transactions シート)
+        # カラム: uploaded_at(A), csv_type(B), date(C), vendor(D), amount(E), file_name(F), status(G)
         from datetime import datetime
         rows = []
         for tx in transactions:
@@ -855,12 +1050,13 @@ def _process_csv(body, client, csv_type: str):
                 tx.get("date", ""),
                 tx.get("vendor", ""),
                 str(tx.get("amount", 0)),
-                file_name
+                file_name,
+                "pending"
             ])
 
         invoice_fetcher.sheets.spreadsheets().values().append(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="csv_transactions!A:F",
+            range="csv_transactions!A:G",
             valueInputOption="USER_ENTERED",
             body={"values": rows}
         ).execute()
@@ -1049,7 +1245,7 @@ def handle_reconcile(ack, respond, body, client):
             # YYYYMM形式に統一
             target_months.add(f"{p['year']}{p['month']:02d}")  # 202509
 
-        # CSV取引を取得
+        # CSV取引を取得（カラム: uploaded_at(A), csv_type(B), date(C), vendor(D), amount(E), file_name(F), status(G)）
         result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
             range="csv_transactions!A2:G1000"
@@ -1057,9 +1253,30 @@ def handle_reconcile(ack, respond, body, client):
 
         rows = result.get("values", [])
         transactions = []
+        already_matched_count = 0
 
-        for row in rows:
+        for row_idx, row in enumerate(rows):
             if len(row) >= 5:
+                # status列（G列）を確認: matched はスキップ
+                tx_status = row[6] if len(row) > 6 else ""
+                if tx_status == "matched":
+                    # 期間内かどうかもチェックしてカウント
+                    tx_date = row[2] if len(row) > 2 else ""
+                    tx_month = ""
+                    if len(tx_date) >= 8 and tx_date[:8].isdigit():
+                        tx_month = tx_date[:6]
+                    elif "/" in tx_date:
+                        parts = tx_date.split("/")
+                        if len(parts) >= 2:
+                            tx_month = f"{parts[0]}{parts[1].zfill(2)}"
+                    elif "-" in tx_date:
+                        parts = tx_date.split("-")
+                        if len(parts) >= 2:
+                            tx_month = f"{parts[0]}{parts[1].zfill(2)}"
+                    if tx_month in target_months:
+                        already_matched_count += 1
+                    continue
+
                 tx_date = row[2] if len(row) > 2 else ""
 
                 # 日付形式を判定してYYYYMM or YYYY-MMを抽出
@@ -1090,28 +1307,36 @@ def handle_reconcile(ack, respond, body, client):
                         "type": row[1] if len(row) > 1 else "",
                         "date": tx_date,
                         "vendor": row[3] if len(row) > 3 else "",
-                        "amount": tx_amount
+                        "amount": tx_amount,
+                        "_sheet_row": row_idx + 2  # スプレッドシートの実際の行番号（ヘッダー行=1）
                     })
 
-        if not transactions:
+        if not transactions and already_matched_count == 0:
             client.chat_postMessage(
                 channel=user_id,
                 text="⚠️ CSVデータがありません。先にCSVファイルをアップロードしてください。"
             )
             return
 
+        if not transactions and already_matched_count > 0:
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"✨ 期間 `{text}` のCSV取引はすべて照合済みです（{already_matched_count}件）。"
+            )
+            return
+
         # 照会実行
         reconcile_result = invoice_fetcher.reconcile_csv(transactions, text)
 
-        # マッチした請求書のstatusを「matched」に更新
+        # マッチしたCSV取引のstatusを「matched」に更新
         matched_items = reconcile_result.get("matched", [])
         if matched_items:
             batch_updates = []
             for m in matched_items:
-                sheet_row = m["invoice"].get("_sheet_row")
+                sheet_row = m["transaction"].get("_sheet_row")
                 if sheet_row:
                     batch_updates.append({
-                        "range": f"invoices!G{sheet_row}",
+                        "range": f"csv_transactions!G{sheet_row}",
                         "values": [["matched"]]
                     })
             if batch_updates:
@@ -1127,7 +1352,6 @@ def handle_reconcile(ack, respond, body, client):
         matched_count = reconcile_result["matched_count"]
         missing_count = reconcile_result["missing_count"]
         total = reconcile_result["total_transactions"]
-        already_matched_count = reconcile_result.get("already_matched_count", 0)
 
         # 除外するキーワード（手数料、利息など）
         exclude_keywords = ["手数料", "利息", "振込手数料", "入金", "税金", "給与", "給料", "年金", "保険料"]
@@ -1151,17 +1375,12 @@ def handle_reconcile(ack, respond, body, client):
         from collections import defaultdict
         matched_vendors = defaultdict(lambda: {"count": 0, "total": 0})
         for m in matched_items:
-            inv = m["invoice"]
-            vendor_name = clean_vendor_name(inv.get("vendor", "不明"))
+            tx = m["transaction"]
+            vendor_name = clean_vendor_name(tx.get("vendor", "不明"))
             if not vendor_name:
                 vendor_name = "不明"
-            amount = 0
-            try:
-                amount = int(str(inv.get("amount", "0")).replace(",", "").replace("¥", ""))
-            except (ValueError, TypeError):
-                pass
             matched_vendors[vendor_name]["count"] += 1
-            matched_vendors[vendor_name]["total"] += amount
+            matched_vendors[vendor_name]["total"] += tx.get("amount", 0)
 
         # ベンダーごとにグルーピング（銀行・クレジット別）
         bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
@@ -1205,14 +1424,14 @@ def handle_reconcile(ack, respond, body, client):
         if already_matched_count > 0:
             result_text += f"• ⏭️ 照合済みスキップ: {already_matched_count}件\n"
 
-        # 一致した請求書のサマリー
+        # 一致した取引のサマリー
         if matched_vendors:
             matched_sorted = sorted(matched_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
             matched_list = ""
             for name, data in matched_sorted:
                 matched_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
-            result_text += f"\n*✅ 一致した請求書:*{matched_list}\n"
-            result_text += "\n_※ スプレッドシートの invoices シートで Status = matched を確認できます_\n"
+            result_text += f"\n*✅ 一致した取引:*{matched_list}\n"
+            result_text += "\n_※ スプレッドシートの csv_transactions シートで status = matched を確認できます_\n"
 
         if bank_list:
             result_text += f"\n*🏦 銀行振込（ルール登録推奨）:*{bank_list}\n"
