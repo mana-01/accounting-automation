@@ -137,86 +137,103 @@ def handle_status(ack, respond):
 
 
 @slack_app.command("/accounting-add-subscription")
-def handle_add_subscription(ack, client, body):
+def handle_add_subscription(ack, client, body, respond):
     """メール取得ルール追加モーダル（新名称）"""
     ack()
-    _open_add_rule_modal(client, body)
+    _open_add_rule_modal(client, body, respond)
 
 
 @slack_app.command("/accounting-add-email-rule")
-def handle_add_email_rule(ack, client, body):
+def handle_add_email_rule(ack, client, body, respond):
     """メール取得ルール追加モーダル（旧名称 - 後方互換）"""
     ack()
-    _open_add_rule_modal(client, body)
+    _open_add_rule_modal(client, body, respond)
 
 
-def _open_add_rule_modal(client, body):
-    """ルール追加モーダルを開く共通関数"""
-    client.views_open(
-        trigger_id=body["trigger_id"],
-        view={
-            "type": "modal",
-            "callback_id": "add_email_rule_modal",
-            "title": {"type": "plain_text", "text": "メール取得ルール追加"},
-            "submit": {"type": "plain_text", "text": "追加"},
-            "close": {"type": "plain_text", "text": "キャンセル"},
-            "blocks": [
-                {
-                    "type": "input",
-                    "block_id": "name_block",
-                    "label": {"type": "plain_text", "text": "ルール名（サービス名）"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "name_input",
-                        "placeholder": {"type": "plain_text", "text": "例: AWS, GitHub, Notion"}
+# モーダル定義（モジュール読み込み時に構築してコールドスタートの影響を最小化）
+_ADD_RULE_MODAL_VIEW = {
+    "type": "modal",
+    "callback_id": "add_email_rule_modal",
+    "title": {"type": "plain_text", "text": "メール取得ルール追加"},
+    "submit": {"type": "plain_text", "text": "追加"},
+    "close": {"type": "plain_text", "text": "キャンセル"},
+    "blocks": [
+        {
+            "type": "input",
+            "block_id": "name_block",
+            "label": {"type": "plain_text", "text": "ルール名（サービス名）"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "name_input",
+                "placeholder": {"type": "plain_text", "text": "例: AWS, GitHub, Notion"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "sender_block",
+            "label": {"type": "plain_text", "text": "送信者メールアドレス"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "sender_input",
+                "placeholder": {"type": "plain_text", "text": "例: billing@aws.amazon.com"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "subject_block",
+            "label": {"type": "plain_text", "text": "件名キーワード"},
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "subject_input",
+                "placeholder": {"type": "plain_text", "text": "例: Invoice, 請求書, ご利用明細"}
+            }
+        },
+        {
+            "type": "input",
+            "block_id": "type_block",
+            "label": {"type": "plain_text", "text": "取得タイプ"},
+            "element": {
+                "type": "static_select",
+                "action_id": "type_select",
+                "options": [
+                    {
+                        "text": {"type": "plain_text", "text": "PDF添付ファイル"},
+                        "value": "attachment"
+                    },
+                    {
+                        "text": {"type": "plain_text", "text": "メール内リンク"},
+                        "value": "link"
                     }
-                },
-                {
-                    "type": "input",
-                    "block_id": "sender_block",
-                    "label": {"type": "plain_text", "text": "送信者メールアドレス"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "sender_input",
-                        "placeholder": {"type": "plain_text", "text": "例: billing@aws.amazon.com"}
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "subject_block",
-                    "label": {"type": "plain_text", "text": "件名キーワード"},
-                    "element": {
-                        "type": "plain_text_input",
-                        "action_id": "subject_input",
-                        "placeholder": {"type": "plain_text", "text": "例: Invoice, 請求書, ご利用明細"}
-                    }
-                },
-                {
-                    "type": "input",
-                    "block_id": "type_block",
-                    "label": {"type": "plain_text", "text": "取得タイプ"},
-                    "element": {
-                        "type": "static_select",
-                        "action_id": "type_select",
-                        "options": [
-                            {
-                                "text": {"type": "plain_text", "text": "PDF添付ファイル"},
-                                "value": "attachment"
-                            },
-                            {
-                                "text": {"type": "plain_text", "text": "メール内リンク"},
-                                "value": "link"
-                            }
-                        ],
-                        "initial_option": {
-                            "text": {"type": "plain_text", "text": "PDF添付ファイル"},
-                            "value": "attachment"
-                        }
-                    }
+                ],
+                "initial_option": {
+                    "text": {"type": "plain_text", "text": "PDF添付ファイル"},
+                    "value": "attachment"
                 }
-            ]
+            }
         }
-    )
+    ]
+}
+
+
+def _open_add_rule_modal(client, body, respond):
+    """ルール追加モーダルを開く共通関数"""
+    try:
+        client.views_open(
+            trigger_id=body["trigger_id"],
+            view=_ADD_RULE_MODAL_VIEW,
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if "expired_trigger_id" in error_msg or "trigger" in error_msg.lower():
+            respond({
+                "response_type": "ephemeral",
+                "text": "サーバー起動に時間がかかりました。もう一度 `/accounting-add-subscription` を実行してください。"
+            })
+        else:
+            respond({
+                "response_type": "ephemeral",
+                "text": f"フォームの表示に失敗しました: {error_msg}"
+            })
 
 
 @slack_app.view("add_email_rule_modal")
@@ -1050,23 +1067,30 @@ def handle_reconcile(ack, respond, body, client):
                 if len(tx_date) >= 8 and tx_date[:8].isdigit():
                     # YYYYMMDD形式 (20250915)
                     tx_month = tx_date[:6]  # 202509
-                elif "/" in tx_date and len(tx_date) >= 7:
-                    # YYYY/MM/DD形式 (2025/09/15)
+                elif "/" in tx_date:
+                    # YYYY/MM/DD形式 (2025/09/15, 2025/9/15 等)
                     parts = tx_date.split("/")
                     if len(parts) >= 2:
-                        tx_month = f"{parts[0]}{parts[1]}"  # 202509
-                elif "-" in tx_date and len(tx_date) >= 7:
+                        tx_month = f"{parts[0]}{parts[1].zfill(2)}"  # 202509
+                elif "-" in tx_date:
                     # YYYY-MM-DD形式 (2025-09-15)
                     parts = tx_date.split("-")
                     if len(parts) >= 2:
-                        tx_month = f"{parts[0]}{parts[1]}"  # 202509
+                        tx_month = f"{parts[0]}{parts[1].zfill(2)}"  # 202509
 
                 if tx_month in target_months:
+                    # 金額パース（カンマ・通貨記号を除去）
+                    tx_amount_str = row[4] if len(row) > 4 else "0"
+                    try:
+                        tx_amount = int(str(tx_amount_str).replace(",", "").replace("¥", "").replace("円", "").strip())
+                    except (ValueError, TypeError):
+                        tx_amount = 0
+
                     transactions.append({
                         "type": row[1] if len(row) > 1 else "",
                         "date": tx_date,
                         "vendor": row[3] if len(row) > 3 else "",
-                        "amount": int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
+                        "amount": tx_amount
                     })
 
         if not transactions:
