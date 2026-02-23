@@ -176,10 +176,11 @@ def parse_invoice_filename(filename: str) -> dict:
     amount_str = parts[-1]
     vendor = "_".join(parts[1:-1])
 
-    # 金額をパース
+    # 金額をパース（末尾の y/Y/円/¥/￥ を除去）
     amount = None
     try:
-        parsed = int(amount_str.replace(",", ""))
+        cleaned = re.sub(r'[yY円¥￥]', '', amount_str).replace(",", "")
+        parsed = int(cleaned)
         if parsed > 0:
             amount = parsed
     except (ValueError, TypeError):
