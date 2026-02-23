@@ -1239,11 +1239,16 @@ class InvoiceFetcher:
     def _strip_vendor_noise(name: str) -> str:
         """ベンダー名からCSV取引種別・銀行名・会社種別などのノイズを除去"""
         import re
-        # CSV摘要のプレフィックス除去（振込、PE、デビット利用、etc.）
-        name = re.sub(r"^(振込|pe|デビット利用|クレジット|口座振替|引落|自振)\s*", "", name, flags=re.IGNORECASE)
-        # 銀行名除去（カタカナの銀行名: ミツビシユーエフジエイ、ミツイスミトモ等）
+        # CSV摘要のプレフィックス除去（漢字 + カタカナ両対応）
+        # 銀行CSVは半角カタカナ→NFKC後に全角カタカナになるため、カタカナ形も必要
         name = re.sub(
-            r"^(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネツト|"
+            r"^(振込|フリコミ|pe|デビット利用|デビツトリヨウ|クレジット|クレジツト|"
+            r"口座振替|コウザフリカエ|引落|ヒキオトシ|自振|ジフリ)\s*",
+            "", name, flags=re.IGNORECASE
+        )
+        # 銀行名除去（位置不問: 先頭以外にも対応）
+        name = re.sub(
+            r"(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネツト|"
             r"ラクテン|ナント|キヨウトシンキン|ジユウハチ|リソナ|ゆうちょ|ユウチヨ|"
             r"ミツイスミトモギンコウ|ミズホギンコウ|smbc|mufg|sbi)\s*",
             "", name, flags=re.IGNORECASE
@@ -1287,6 +1292,21 @@ class InvoiceFetcher:
         if len(w2_orig) == 1 and len(v2_clean) <= 5 and len(w1_orig) > 1:
             initials = "".join(w[0] for w in w1_orig if w)
             if v2_clean == initials:
+                return True
+        # 4. トークンベースのマッチング（ノイズ除去後のトークン比較）
+        # 例: "クロダセナ" ↔ "フリコミ ミツイスミトモ クロダ セナ"
+        import re
+        v1_tokens = [t for t in re.split(r"[\s\u3000]+", cls._strip_vendor_noise(v1).lower()) if len(t) >= 2]
+        v2_tokens = [t for t in re.split(r"[\s\u3000]+", cls._strip_vendor_noise(v2).lower()) if len(t) >= 2]
+        if v1_tokens and v2_tokens:
+            shorter, longer = (v1_tokens, v2_tokens) if len(v1_tokens) <= len(v2_tokens) else (v2_tokens, v1_tokens)
+            longer_joined = "".join(longer)
+            # 短い方の全トークンが、長い方の結合文字列に含まれればマッチ
+            if all(t in longer_joined for t in shorter):
+                return True
+            # 短い方の結合文字列が、長い方のいずれかのトークンに含まれてもマッチ
+            shorter_joined = "".join(shorter)
+            if any(shorter_joined in t or t in shorter_joined for t in longer):
                 return True
         return False
 
