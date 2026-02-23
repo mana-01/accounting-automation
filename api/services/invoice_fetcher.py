@@ -40,10 +40,11 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
 必ず以下のJSON形式のみで回答してください。説明文は不要です。
 
 {
-  "amount": 請求金額（税込合計、整数、円単位、不明ならnull）,
+  "amount": 請求金額（税込合計、整数、不明ならnull）,
   "vendor": "請求元の会社名・サービス名（不明ならnull）",
   "date": "請求日または発行日（YYYY-MM-DD形式、不明ならnull）",
-  "summary": "請求内容の簡潔な要約（20文字以内）"
+  "summary": "請求内容の簡潔な要約（20文字以内）",
+  "currency": "通貨コード（JPY, USD等。$表記やドル建てならUSD、¥表記や円建てならJPY）"
 }"""
 
         response = model.generate_content([prompt, pdf_part])
@@ -64,11 +65,16 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
             except (ValueError, TypeError):
                 amount = None
 
+        currency = (data.get("currency") or "JPY").upper().strip()
+        if currency not in ("JPY", "USD", "EUR", "GBP"):
+            currency = "JPY"
+
         return {
             "amount": amount,
             "vendor": data.get("vendor"),
             "date": data.get("date"),
             "summary": data.get("summary"),
+            "currency": currency,
         }
 
     except Exception as e:
@@ -686,12 +692,13 @@ class InvoiceFetcher:
             invoice_data.get("source", ""),
             drive_url,
             invoice_data.get("status", "pending"),
-            datetime.now().isoformat()
+            datetime.now().isoformat(),
+            invoice_data.get("currency", "JPY"),
         ]
 
         self.sheets.spreadsheets().values().append(
             spreadsheetId=self.spreadsheet_id,
-            range="invoices!A:H",
+            range="invoices!A:I",
             valueInputOption="USER_ENTERED",
             body={"values": [row]}
         ).execute()
@@ -720,7 +727,8 @@ class InvoiceFetcher:
                 "drive_url": drive_result["web_view_link"],
                 "summary": pdf_info.get("summary") or "",
                 "type": "credit",
-                "status": "pending"
+                "status": "pending",
+                "currency": pdf_info.get("currency", "JPY"),
             }
             recorded = self.record_invoice(invoice_data)
             if not recorded:
@@ -799,7 +807,8 @@ class InvoiceFetcher:
                                         "drive_url": drive_result["web_view_link"],
                                         "summary": pdf_info.get("summary") or "",
                                         "type": "credit",
-                                        "status": "pending"
+                                        "status": "pending",
+                                        "currency": pdf_info.get("currency", "JPY"),
                                     }
                                     recorded = self.record_invoice(invoice_data)
                                     if recorded:
@@ -915,7 +924,8 @@ class InvoiceFetcher:
                                             "drive_url": drive_result["web_view_link"],
                                             "summary": pdf_info.get("summary") or "",
                                             "type": "credit",
-                                            "status": "pending"
+                                            "status": "pending",
+                                            "currency": pdf_info.get("currency", "JPY"),
                                         }
                                         recorded = self.record_invoice(invoice_data)
                                         if recorded:
@@ -1009,7 +1019,8 @@ class InvoiceFetcher:
                                 "drive_url": drive_url,
                                 "summary": summary,
                                 "type": invoice_type,
-                                "status": "pending"
+                                "status": "pending",
+                                "currency": pdf_info.get("currency", "JPY") if pdf_info else "JPY",
                             }
                             self.record_invoice(invoice_data)
                             results["registered"] += 1
@@ -1150,7 +1161,7 @@ class InvoiceFetcher:
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="invoices!A2:H1000"
+                range="invoices!A2:I1000"
             ).execute()
 
             rows = result.get("values", [])
@@ -1183,6 +1194,7 @@ class InvoiceFetcher:
                             "drive_url": row[5] if len(row) > 5 else "",
                             "status": row[6] if len(row) > 6 else "pending",
                             "type": "credit",
+                            "currency": row[8].strip().upper() if len(row) > 8 and row[8].strip() else "JPY",
                             "_sheet_row": row_idx + 2  # スプレッドシートの実際の行番号（ヘッダー行=1を考慮）
                         })
 
@@ -1298,16 +1310,16 @@ class InvoiceFetcher:
         try:
             import unicodedata
             s = unicodedata.normalize("NFKC", str(amount_str))
-            return int(s.replace(",", "").replace("¥", "").replace("円", "").replace("￥", "").strip())
+            return int(s.replace(",", "").replace("¥", "").replace("円", "").replace("￥", "").replace("$", "").strip())
         except (ValueError, TypeError):
             return None
 
     def reconcile_csv(self, transactions: list[dict], period_code: str) -> dict:
-        """CSV取引と請求書を照合（2段階マッチ）
+        """CSV取引と請求書を照合（3段階マッチ）
 
         ステップ1: 日付(±3日以内) + 金額一致 → matched
         ステップ2: 名前の部分一致/頭文字一致 + 金額一致 → matched（日付不問）
-        ※金額一致は常に必須
+        ステップ2.5: USD請求書は名前一致 + 同月 → matched（金額不問）
         ※csv_transactionsのstatus=matchedは呼び出し元でフィルタ済み
         """
         invoices = self.get_invoices_for_period(period_code)
@@ -1363,6 +1375,26 @@ class InvoiceFetcher:
                     unmatched_tx_indices.discard(tx_idx)
                     break
 
+        # --- ステップ2.5: USD請求書は名前一致 + 同月でマッチ（金額不問） ---
+        for tx_idx in sorted(unmatched_tx_indices):
+            tx = transactions[tx_idx]
+            tx_date = self._normalize_date(tx.get("date", ""))
+            tx_month = tx_date[:7] if len(tx_date) >= 7 else ""
+
+            for inv_idx, inv in enumerate(invoices):
+                if inv_idx in used_invoices:
+                    continue
+                if inv.get("currency", "JPY") != "USD":
+                    continue
+                inv_date = self._normalize_date(inv.get("date", ""))
+                inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
+                if tx_month and inv_month and tx_month == inv_month:
+                    if self._vendors_match(tx["vendor"], inv["vendor"]):
+                        matched.append({"transaction": tx, "invoice": inv})
+                        used_invoices.add(inv_idx)
+                        unmatched_tx_indices.discard(tx_idx)
+                        break
+
         # --- 未マッチ取引の処理 ---
         # ステップ3: 未マッチの取引が、既にマッチ済みのinvoiceと一致する場合は
         # 重複取引（同じCSVの再アップロード等）として扱い、missingではなくmatched扱いにする
@@ -1374,19 +1406,32 @@ class InvoiceFetcher:
             tx_date = self._normalize_date(tx.get("date", ""))
             is_duplicate = False
 
-            if tx_amount:
-                for inv_idx in used_invoices:
-                    inv = invoices[inv_idx]
-                    inv_amount = self._parse_amount(inv.get("amount", ""))
-                    if inv_amount is None or inv_amount != tx_amount:
-                        continue
+            tx_month = tx_date[:7] if len(tx_date) >= 7 else ""
+
+            for inv_idx in used_invoices:
+                inv = invoices[inv_idx]
+                # USD請求書: 名前+月で重複判定
+                if inv.get("currency", "JPY") == "USD":
                     inv_date = self._normalize_date(inv.get("date", ""))
-                    if self._dates_match(tx_date, inv_date):
-                        is_duplicate = True
-                        break
-                    if self._vendors_match(tx["vendor"], inv["vendor"]):
-                        is_duplicate = True
-                        break
+                    inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
+                    if tx_month and inv_month and tx_month == inv_month:
+                        if self._vendors_match(tx["vendor"], inv["vendor"]):
+                            is_duplicate = True
+                            break
+                    continue
+                # JPY請求書: 金額一致が必須
+                if not tx_amount:
+                    continue
+                inv_amount = self._parse_amount(inv.get("amount", ""))
+                if inv_amount is None or inv_amount != tx_amount:
+                    continue
+                inv_date = self._normalize_date(inv.get("date", ""))
+                if self._dates_match(tx_date, inv_date):
+                    is_duplicate = True
+                    break
+                if self._vendors_match(tx["vendor"], inv["vendor"]):
+                    is_duplicate = True
+                    break
 
             if is_duplicate:
                 duplicate_matched.append({"transaction": tx, "invoice": invoices[inv_idx]})

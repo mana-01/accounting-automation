@@ -69,7 +69,7 @@ def handle_status(ack, respond):
 
         result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="invoices!A2:H1000"
+            range="invoices!A2:I1000"
         ).execute()
         rows = result.get("values", [])
 
@@ -466,7 +466,7 @@ def handle_invoices(ack, respond, body, client):
 
         result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="invoices!A2:H100"
+            range="invoices!A2:I100"
         ).execute()
 
         rows = result.get("values", [])
