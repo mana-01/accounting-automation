@@ -1290,9 +1290,43 @@ class InvoiceFetcher:
                     break
 
         # --- 未マッチ取引の処理 ---
+        # ステップ3: 未マッチの取引が、既にマッチ済みのinvoiceと一致する場合は
+        # 重複取引（同じCSVの再アップロード等）として扱い、missingではなくmatched扱いにする
+        duplicate_matched = []
+        still_unmatched = set()
+        for tx_idx in sorted(unmatched_tx_indices):
+            tx = transactions[tx_idx]
+            tx_amount = tx.get("amount", 0)
+            tx_date = self._normalize_date(tx.get("date", ""))
+            tx_vendor_lower = tx["vendor"].lower()
+            is_duplicate = False
+
+            if tx_amount:
+                for inv_idx in used_invoices:
+                    inv = invoices[inv_idx]
+                    inv_amount = self._parse_amount(inv.get("amount", ""))
+                    if inv_amount is None or inv_amount != tx_amount:
+                        continue
+                    # 日付一致チェック
+                    inv_date = self._normalize_date(inv.get("date", ""))
+                    if tx_date and inv_date and tx_date == inv_date:
+                        is_duplicate = True
+                        break
+                    # 名前部分一致チェック
+                    inv_vendor_lower = inv["vendor"].lower()
+                    if inv_vendor_lower and tx_vendor_lower:
+                        if inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower:
+                            is_duplicate = True
+                            break
+
+            if is_duplicate:
+                duplicate_matched.append({"transaction": tx, "invoice": invoices[inv_idx]})
+            else:
+                still_unmatched.add(tx_idx)
+
         missing = []
         unregistered_vendors = []
-        for tx_idx in sorted(unmatched_tx_indices):
+        for tx_idx in sorted(still_unmatched):
             tx = transactions[tx_idx]
             tx_vendor_lower = tx["vendor"].lower()
             missing.append(tx)
@@ -1307,10 +1341,12 @@ class InvoiceFetcher:
 
         return {
             "matched": matched,
+            "duplicate_matched": duplicate_matched,
             "missing": missing,
             "unregistered_vendors": unregistered_vendors,
             "total_transactions": len(transactions),
             "matched_count": len(matched),
+            "duplicate_count": len(duplicate_matched),
             "missing_count": len(missing),
         }
 

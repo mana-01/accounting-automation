@@ -1136,9 +1136,12 @@ def handle_reconcile(ack, respond, body, client):
 
         # マッチしたCSV取引・請求書の両方のstatusを「matched」に更新
         matched_items = reconcile_result.get("matched", [])
-        if matched_items:
+        duplicate_items = reconcile_result.get("duplicate_matched", [])
+        all_matched = matched_items + duplicate_items
+
+        if all_matched:
             batch_updates = []
-            for m in matched_items:
+            for m in all_matched:
                 # csv_transactions のstatus更新
                 tx_sheet_row = m["transaction"].get("_sheet_row")
                 if tx_sheet_row:
@@ -1146,13 +1149,14 @@ def handle_reconcile(ack, respond, body, client):
                         "range": f"csv_transactions!G{tx_sheet_row}",
                         "values": [["matched"]]
                     })
-                # invoices のstatus更新（フォールバック用）
-                inv_sheet_row = m["invoice"].get("_sheet_row")
-                if inv_sheet_row:
-                    batch_updates.append({
-                        "range": f"invoices!G{inv_sheet_row}",
-                        "values": [["matched"]]
-                    })
+                # invoices のstatus更新（フォールバック用、新規マッチのみ）
+                if m in matched_items:
+                    inv_sheet_row = m["invoice"].get("_sheet_row")
+                    if inv_sheet_row:
+                        batch_updates.append({
+                            "range": f"invoices!G{inv_sheet_row}",
+                            "values": [["matched"]]
+                        })
             if batch_updates:
                 invoice_fetcher.sheets.spreadsheets().values().batchUpdate(
                     spreadsheetId=invoice_fetcher.spreadsheet_id,
@@ -1164,6 +1168,7 @@ def handle_reconcile(ack, respond, body, client):
 
         # 結果を表示
         matched_count = reconcile_result["matched_count"]
+        duplicate_count = reconcile_result.get("duplicate_count", 0)
         missing_count = reconcile_result["missing_count"]
         total = reconcile_result["total_transactions"]
 
@@ -1235,6 +1240,8 @@ def handle_reconcile(ack, respond, body, client):
 • ✅ 今回一致: {matched_count}件
 • ❌ 不足: {missing_count}件
 """
+        if duplicate_count > 0:
+            result_text += f"• 🔄 重複取引（一致済み）: {duplicate_count}件\n"
         if already_matched_count > 0:
             result_text += f"• ⏭️ 照合済みスキップ: {already_matched_count}件\n"
 
