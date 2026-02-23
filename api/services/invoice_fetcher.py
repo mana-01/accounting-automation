@@ -1153,10 +1153,16 @@ class InvoiceFetcher:
         rules = self.get_email_rules()
         rule_names = {r["name"].lower() for r in rules}
 
+        # 既にmatchedの請求書はスキップ対象としてマーク
+        already_matched = set()
+        for idx, inv in enumerate(invoices):
+            if inv.get("status") == "matched":
+                already_matched.add(idx)
+
         matched = []
         missing = []
         unregistered_vendors = []
-        used_invoices = set()  # 同じ請求書を複数回マッチさせない
+        used_invoices = set(already_matched)  # matched済みの請求書は使用済みとして扱う
 
         for tx in transactions:
             tx_vendor_lower = tx["vendor"].lower()
@@ -1246,7 +1252,8 @@ class InvoiceFetcher:
             "unregistered_vendors": unregistered_vendors,
             "total_transactions": len(transactions),
             "matched_count": len(matched),
-            "missing_count": len(missing)
+            "missing_count": len(missing),
+            "already_matched_count": len(already_matched)
         }
 
 

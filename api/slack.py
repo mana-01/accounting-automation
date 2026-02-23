@@ -65,12 +65,13 @@ def handle_status(ack, respond):
     ack()
     try:
         from api.services.invoice_fetcher import invoice_fetcher
+        from collections import defaultdict
 
         result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
             range="invoices!A2:H1000"
         ).execute()
-        invoices = result.get("values", [])
+        rows = result.get("values", [])
 
         rules_result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
@@ -78,9 +79,55 @@ def handle_status(ack, respond):
         ).execute()
         rules = rules_result.get("values", [])
 
+        # カラム: id(0), vendor(1), amount(2), date(3), source(4), drive_url(5), status(6), created_at(7)
+        matched_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        pending_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        matched_total = 0
+        pending_total = 0
+
+        for row in rows:
+            vendor = row[1] if len(row) > 1 else "不明"
+            amount = 0
+            if len(row) > 2 and row[2]:
+                try:
+                    amount = int(str(row[2]).replace(",", "").replace("¥", ""))
+                except (ValueError, TypeError):
+                    pass
+            status = row[6] if len(row) > 6 else "pending"
+
+            if status == "matched":
+                matched_vendors[vendor]["count"] += 1
+                matched_vendors[vendor]["total"] += amount
+                matched_total += 1
+            else:
+                pending_vendors[vendor]["count"] += 1
+                pending_vendors[vendor]["total"] += amount
+                pending_total += 1
+
+        text = f"📊 *経理状況*\n\n"
+        text += f"• メール取得ルール: {len(rules)}件\n"
+        text += f"• 取得済み請求書: {len(rows)}件\n"
+        text += f"  - ✅ 照合済み: {matched_total}件\n"
+        text += f"  - 📋 未照合: {pending_total}件\n"
+
+        if matched_vendors:
+            matched_sorted = sorted(matched_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
+            text += f"\n*✅ 照合済み ({matched_total}件):*\n"
+            for name, data in matched_sorted:
+                text += f"• {name}: {data['count']}件 ¥{data['total']:,}\n"
+
+        if pending_vendors:
+            pending_sorted = sorted(pending_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
+            text += f"\n*📋 未照合 ({pending_total}件):*\n"
+            for name, data in pending_sorted:
+                text += f"• {name}: {data['count']}件 ¥{data['total']:,}\n"
+
+        if pending_total > 0:
+            text += "\n`/accounting-reconcile YYYYMM` でCSV取引との照合を実行できます。"
+
         respond({
             "response_type": "ephemeral",
-            "text": f"📊 *経理状況*\n\n• メール取得ルール: {len(rules)}件\n• 取得済み請求書: {len(invoices)}件\n\n`/accounting-fetch-invoices` でメールから請求書を取得できます。"
+            "text": text
         })
     except Exception as e:
         respond({
@@ -1056,6 +1103,7 @@ def handle_reconcile(ack, respond, body, client):
         matched_count = reconcile_result["matched_count"]
         missing_count = reconcile_result["missing_count"]
         total = reconcile_result["total_transactions"]
+        already_matched_count = reconcile_result.get("already_matched_count", 0)
 
         # 除外するキーワード（手数料、利息など）
         exclude_keywords = ["手数料", "利息", "振込手数料", "入金", "税金", "給与", "給料", "年金", "保険料"]
@@ -1127,9 +1175,11 @@ def handle_reconcile(ack, respond, body, client):
         result_text = f"""📊 *照会結果 ({text})*
 
 • 総取引数: {total}件
-• ✅ 一致: {matched_count}件
+• ✅ 今回一致: {matched_count}件
 • ❌ 不足: {missing_count}件
 """
+        if already_matched_count > 0:
+            result_text += f"• ⏭️ 照合済みスキップ: {already_matched_count}件\n"
 
         # 一致した請求書のサマリー
         if matched_vendors:
