@@ -1147,8 +1147,48 @@ class InvoiceFetcher:
             print(f"Error getting invoices: {e}")
             return []
 
+    @staticmethod
+    def _normalize_date(d: str) -> str:
+        """日付文字列をYYYY-MM-DD形式に正規化する"""
+        d = d.strip()
+        if "-" in d and len(d) >= 10:
+            # YYYY-MM-DD形式 (2026-02-15)
+            return d[:10]
+        elif "-" in d and len(d) >= 7:
+            # YYYY-MM形式 (2026-02) → 日を01に
+            return d[:7] + "-01"
+        elif len(d) >= 8 and d[:8].isdigit():
+            # YYYYMMDD形式 (20260215)
+            return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
+        elif "/" in d and len(d) >= 10:
+            # YYYY/MM/DD形式 (2026/02/15)
+            parts = d.split("/")
+            if len(parts) >= 3:
+                return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
+        elif "/" in d and len(d) >= 7:
+            # YYYY/MM形式 (2026/02)
+            parts = d.split("/")
+            if len(parts) >= 2:
+                return f"{parts[0]}-{parts[1].zfill(2)}-01"
+        return d
+
+    @staticmethod
+    def _parse_amount(amount_str) -> int | None:
+        """金額文字列をintに変換。変換できない場合はNone"""
+        if not amount_str:
+            return None
+        try:
+            return int(str(amount_str).replace(",", "").replace("¥", "").replace("円", "").strip())
+        except (ValueError, TypeError):
+            return None
+
     def reconcile_csv(self, transactions: list[dict], period_code: str) -> dict:
-        """CSV取引と請求書を照合（金額と日付ベース）"""
+        """CSV取引と請求書を照合（2段階マッチ）
+
+        ステップ1: 日付(YYYY-MM-DD完全一致) + 金額一致 → matched
+        ステップ2: 名前の部分一致 + 金額一致 → matched（日付不問）
+        ※金額一致は常に必須
+        """
         invoices = self.get_invoices_for_period(period_code)
         rules = self.get_email_rules()
         rule_names = {r["name"].lower() for r in rules}
@@ -1160,91 +1200,71 @@ class InvoiceFetcher:
                 already_matched.add(idx)
 
         matched = []
-        missing = []
-        unregistered_vendors = []
         used_invoices = set(already_matched)  # matched済みの請求書は使用済みとして扱う
+        unmatched_tx_indices = set(range(len(transactions)))
 
-        for tx in transactions:
+        # --- ステップ1: 日付(YYYY-MM-DD) + 金額 で照合 ---
+        for tx_idx, tx in enumerate(transactions):
+            tx_amount = tx.get("amount", 0)
+            tx_date = self._normalize_date(tx.get("date", ""))
+
+            if not tx_date or not tx_amount:
+                continue
+
+            for inv_idx, inv in enumerate(invoices):
+                if inv_idx in used_invoices:
+                    continue
+
+                inv_amount = self._parse_amount(inv.get("amount", ""))
+                if inv_amount is None or inv_amount != tx_amount:
+                    continue
+
+                inv_date = self._normalize_date(inv.get("date", ""))
+                if tx_date == inv_date:
+                    matched.append({"transaction": tx, "invoice": inv})
+                    used_invoices.add(inv_idx)
+                    unmatched_tx_indices.discard(tx_idx)
+                    break
+
+        # --- ステップ2: 名前の部分一致 + 金額 で照合（日付不問） ---
+        for tx_idx in sorted(unmatched_tx_indices):
+            tx = transactions[tx_idx]
             tx_vendor_lower = tx["vendor"].lower()
             tx_amount = tx.get("amount", 0)
-            tx_date = tx.get("date", "")  # YYYY-MM-DD形式を想定
 
-            # 請求書と照合
-            found = False
-            for idx, inv in enumerate(invoices):
-                if idx in used_invoices:
+            if not tx_amount:
+                continue
+
+            for inv_idx, inv in enumerate(invoices):
+                if inv_idx in used_invoices:
+                    continue
+
+                inv_amount = self._parse_amount(inv.get("amount", ""))
+                if inv_amount is None or inv_amount != tx_amount:
                     continue
 
                 inv_vendor_lower = inv["vendor"].lower()
-                inv_date = inv.get("date", "")  # YYYY-MM-DD形式を想定
-                inv_amount_str = inv.get("amount", "")
-
-                # 金額の比較（請求書に金額がある場合のみ）
-                amount_match = False
-                if inv_amount_str:
-                    try:
-                        inv_amount = int(str(inv_amount_str).replace(",", "").replace("¥", ""))
-                        amount_match = (inv_amount == tx_amount)
-                    except (ValueError, TypeError):
-                        amount_match = False
-                else:
-                    # 請求書に金額がない場合はベンダー名で判断
-                    amount_match = (inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower)
-
-                # 日付の比較（同じ月かどうか）
-                date_match = False
-                if tx_date and inv_date:
-                    # 日付文字列からYYYYMM部分を抽出（YYYY-MM-DDがデフォルト）
-                    def extract_month(d: str) -> str:
-                        d = d.strip()
-                        if "-" in d and len(d) >= 7:
-                            # YYYY-MM-DD形式 (2026-02-15) ※デフォルト
-                            parts = d.split("-")
-                            if len(parts) >= 2:
-                                return f"{parts[0]}{parts[1].zfill(2)}"
-                        # フォールバック: その他の形式
-                        elif len(d) >= 8 and d[:8].isdigit():
-                            # YYYYMMDD形式 (20260215)
-                            return d[:6]
-                        elif "/" in d and len(d) >= 7:
-                            # YYYY/MM/DD形式 (2026/02/15)
-                            parts = d.split("/")
-                            if len(parts) >= 2:
-                                return f"{parts[0]}{parts[1].zfill(2)}"
-                        return d[:6] if len(d) >= 6 else ""
-
-                    tx_ym = extract_month(tx_date)
-                    inv_ym = extract_month(inv_date)
-                    date_match = (tx_ym == inv_ym)
-                else:
-                    # 日付がない場合は期間コードで判断
-                    date_match = True
-
-                # ベンダー名の部分一致もチェック（補助条件）
-                vendor_match = (inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower)
-
-                # マッチ条件: (金額一致 AND 日付一致) OR (ベンダー一致 AND 日付一致)
-                if (amount_match and date_match) or (vendor_match and date_match and amount_match):
-                    matched.append({
-                        "transaction": tx,
-                        "invoice": inv
-                    })
-                    used_invoices.add(idx)
-                    found = True
+                if inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower:
+                    matched.append({"transaction": tx, "invoice": inv})
+                    used_invoices.add(inv_idx)
+                    unmatched_tx_indices.discard(tx_idx)
                     break
 
-            if not found:
-                missing.append(tx)
+        # --- 未マッチ取引の処理 ---
+        missing = []
+        unregistered_vendors = []
+        for tx_idx in sorted(unmatched_tx_indices):
+            tx = transactions[tx_idx]
+            tx_vendor_lower = tx["vendor"].lower()
+            missing.append(tx)
 
-                # ルール登録済みかチェック
-                vendor_registered = any(
-                    rn in tx_vendor_lower or tx_vendor_lower in rn
-                    for rn in rule_names
-                )
-                if not vendor_registered:
-                    # 同じベンダーを重複登録しない
-                    if tx["vendor"] not in [v["vendor"] for v in unregistered_vendors]:
-                        unregistered_vendors.append(tx)
+            vendor_registered = any(
+                rn in tx_vendor_lower or tx_vendor_lower in rn
+                for rn in rule_names
+            )
+            if not vendor_registered:
+                if tx["vendor"] not in [v["vendor"] for v in unregistered_vendors]:
+                    unregistered_vendors.append(tx)
 
         return {
             "matched": matched,
