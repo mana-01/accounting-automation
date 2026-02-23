@@ -1032,6 +1032,26 @@ def handle_reconcile(ack, respond, body, client):
         # 照会実行
         reconcile_result = invoice_fetcher.reconcile_csv(transactions, text)
 
+        # マッチした請求書のstatusを「matched」に更新
+        matched_items = reconcile_result.get("matched", [])
+        if matched_items:
+            batch_updates = []
+            for m in matched_items:
+                sheet_row = m["invoice"].get("_sheet_row")
+                if sheet_row:
+                    batch_updates.append({
+                        "range": f"invoices!G{sheet_row}",
+                        "values": [["matched"]]
+                    })
+            if batch_updates:
+                invoice_fetcher.sheets.spreadsheets().values().batchUpdate(
+                    spreadsheetId=invoice_fetcher.spreadsheet_id,
+                    body={
+                        "valueInputOption": "RAW",
+                        "data": batch_updates
+                    }
+                ).execute()
+
         # 結果を表示
         matched_count = reconcile_result["matched_count"]
         missing_count = reconcile_result["missing_count"]
@@ -1055,8 +1075,23 @@ def handle_reconcile(ack, respond, body, client):
         def should_exclude(vendor: str) -> bool:
             return any(kw in vendor for kw in exclude_keywords)
 
-        # ベンダーごとにグルーピング（銀行・クレジット別）
+        # マッチしたベンダーのサマリー作成
         from collections import defaultdict
+        matched_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        for m in matched_items:
+            inv = m["invoice"]
+            vendor_name = clean_vendor_name(inv.get("vendor", "不明"))
+            if not vendor_name:
+                vendor_name = "不明"
+            amount = 0
+            try:
+                amount = int(str(inv.get("amount", "0")).replace(",", "").replace("¥", ""))
+            except (ValueError, TypeError):
+                pass
+            matched_vendors[vendor_name]["count"] += 1
+            matched_vendors[vendor_name]["total"] += amount
+
+        # ベンダーごとにグルーピング（銀行・クレジット別）
         bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
         credit_vendors = defaultdict(lambda: {"count": 0, "total": 0})
 
@@ -1096,6 +1131,15 @@ def handle_reconcile(ack, respond, body, client):
 • ❌ 不足: {missing_count}件
 """
 
+        # 一致した請求書のサマリー
+        if matched_vendors:
+            matched_sorted = sorted(matched_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
+            matched_list = ""
+            for name, data in matched_sorted:
+                matched_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
+            result_text += f"\n*✅ 一致した請求書:*{matched_list}\n"
+            result_text += "\n_※ スプレッドシートの invoices シートで Status = matched を確認できます_\n"
+
         if bank_list:
             result_text += f"\n*🏦 銀行振込（ルール登録推奨）:*{bank_list}\n"
 
@@ -1104,7 +1148,7 @@ def handle_reconcile(ack, respond, body, client):
 
         if bank_list or credit_list:
             result_text += "\n`/accounting-add-email-rule` でルール追加するか、PDFを手動アップロードしてください。"
-        else:
+        elif not matched_vendors:
             result_text += "\n✨ すべての取引が照合済みです！"
 
         client.chat_postMessage(

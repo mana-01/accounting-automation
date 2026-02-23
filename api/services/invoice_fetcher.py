@@ -1121,7 +1121,7 @@ class InvoiceFetcher:
                 target_months.add(f"{p['year']}-{p['month']:02d}")
 
             # カラム: id(0), vendor(1), amount(2), date(3), source(4), drive_url(5), status(6), created_at(7)
-            for row in rows:
+            for row_idx, row in enumerate(rows):
                 if len(row) >= 4:
                     inv_date = row[3] if len(row) > 3 else ""
 
@@ -1138,7 +1138,8 @@ class InvoiceFetcher:
                             "source": row[4] if len(row) > 4 else "",
                             "drive_url": row[5] if len(row) > 5 else "",
                             "status": row[6] if len(row) > 6 else "pending",
-                            "type": "credit"
+                            "type": "credit",
+                            "_sheet_row": row_idx + 2  # スプレッドシートの実際の行番号（ヘッダー行=1を考慮）
                         })
 
             return invoices
