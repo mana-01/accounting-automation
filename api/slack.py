@@ -138,112 +138,19 @@ def handle_status(ack, respond):
 
 @slack_app.command("/accounting-add-subscription")
 def handle_add_subscription(ack, client, body, respond):
-    """サブスクリプション登録モーダルを表示"""
+    """メール取得ルール追加モーダル（新名称）"""
     ack()
-    _open_add_subscription_modal(client, body, respond)
+    _open_add_rule_modal(client, body, respond)
 
 
 @slack_app.command("/accounting-add-email-rule")
 def handle_add_email_rule(ack, client, body, respond):
-    """メール取得ルール追加モーダル"""
+    """メール取得ルール追加モーダル（旧名称 - 後方互換）"""
     ack()
     _open_add_rule_modal(client, body, respond)
 
 
 # モーダル定義（モジュール読み込み時に構築してコールドスタートの影響を最小化）
-_ADD_SUBSCRIPTION_MODAL_VIEW = {
-    "type": "modal",
-    "callback_id": "add_subscription_modal",
-    "title": {"type": "plain_text", "text": "サブスク登録"},
-    "submit": {"type": "plain_text", "text": "登録"},
-    "close": {"type": "plain_text", "text": "キャンセル"},
-    "blocks": [
-        {
-            "type": "input",
-            "block_id": "name_block",
-            "label": {"type": "plain_text", "text": "サービス名"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "name_input",
-                "placeholder": {"type": "plain_text", "text": "例: AWS"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "vendor_block",
-            "label": {"type": "plain_text", "text": "ベンダー名"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "vendor_input",
-                "placeholder": {"type": "plain_text", "text": "例: Amazon Web Services"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "amount_block",
-            "label": {"type": "plain_text", "text": "金額 (円)"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "amount_input",
-                "placeholder": {"type": "plain_text", "text": "例: 10000"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "cycle_block",
-            "label": {"type": "plain_text", "text": "請求サイクル"},
-            "element": {
-                "type": "static_select",
-                "action_id": "cycle_select",
-                "options": [
-                    {"text": {"type": "plain_text", "text": "月次"}, "value": "monthly"},
-                    {"text": {"type": "plain_text", "text": "年次"}, "value": "yearly"},
-                    {"text": {"type": "plain_text", "text": "四半期"}, "value": "quarterly"},
-                ]
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "payment_block",
-            "label": {"type": "plain_text", "text": "支払方法"},
-            "element": {
-                "type": "static_select",
-                "action_id": "payment_select",
-                "options": [
-                    {"text": {"type": "plain_text", "text": "カード"}, "value": "card"},
-                    {"text": {"type": "plain_text", "text": "銀行振込"}, "value": "bank"},
-                ]
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "fetch_block",
-            "label": {"type": "plain_text", "text": "請求書取得方法"},
-            "element": {
-                "type": "static_select",
-                "action_id": "fetch_select",
-                "options": [
-                    {"text": {"type": "plain_text", "text": "メール (PDF添付)"}, "value": "email_pdf"},
-                    {"text": {"type": "plain_text", "text": "メール (リンク)"}, "value": "email_link"},
-                    {"text": {"type": "plain_text", "text": "ログイン取得"}, "value": "login"},
-                    {"text": {"type": "plain_text", "text": "手動"}, "value": "manual"},
-                ]
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "email_subject_block",
-            "label": {"type": "plain_text", "text": "メール件名パターン (オプション)"},
-            "optional": True,
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "email_subject_input",
-                "placeholder": {"type": "plain_text", "text": "例: AWS請求書"}
-            }
-        }
-    ]
-}
-
 _ADD_RULE_MODAL_VIEW = {
     "type": "modal",
     "callback_id": "add_email_rule_modal",
@@ -308,29 +215,8 @@ _ADD_RULE_MODAL_VIEW = {
 }
 
 
-def _open_add_subscription_modal(client, body, respond):
-    """サブスク登録モーダルを開く"""
-    try:
-        client.views_open(
-            trigger_id=body["trigger_id"],
-            view=_ADD_SUBSCRIPTION_MODAL_VIEW,
-        )
-    except Exception as e:
-        error_msg = str(e)
-        if "expired_trigger_id" in error_msg or "trigger" in error_msg.lower():
-            respond({
-                "response_type": "ephemeral",
-                "text": "サーバー起動に時間がかかりました。もう一度 `/accounting-add-subscription` を実行してください。"
-            })
-        else:
-            respond({
-                "response_type": "ephemeral",
-                "text": f"フォームの表示に失敗しました: {error_msg}"
-            })
-
-
 def _open_add_rule_modal(client, body, respond):
-    """ルール追加モーダルを開く"""
+    """ルール追加モーダルを開く共通関数"""
     try:
         client.views_open(
             trigger_id=body["trigger_id"],
@@ -341,93 +227,13 @@ def _open_add_rule_modal(client, body, respond):
         if "expired_trigger_id" in error_msg or "trigger" in error_msg.lower():
             respond({
                 "response_type": "ephemeral",
-                "text": "サーバー起動に時間がかかりました。もう一度 `/accounting-add-email-rule` を実行してください。"
+                "text": "サーバー起動に時間がかかりました。もう一度コマンドを実行してください。"
             })
         else:
             respond({
                 "response_type": "ephemeral",
                 "text": f"フォームの表示に失敗しました: {error_msg}"
             })
-
-
-@slack_app.view("add_subscription_modal")
-def handle_add_subscription_submission(ack, body, client, view):
-    """サブスクリプション登録の処理"""
-    ack()
-
-    try:
-        from datetime import datetime
-        import uuid
-
-        values = view["state"]["values"]
-        name = values["name_block"]["name_input"]["value"]
-        vendor = values["vendor_block"]["vendor_input"]["value"]
-        amount_str = values["amount_block"]["amount_input"]["value"]
-        cycle = values["cycle_block"]["cycle_select"]["selected_option"]["value"]
-        payment = values["payment_block"]["payment_select"]["selected_option"]["value"]
-        fetch = values["fetch_block"]["fetch_select"]["selected_option"]["value"]
-        email_subject = values["email_subject_block"]["email_subject_input"].get("value") or ""
-
-        # 金額をパース
-        try:
-            amount = float(amount_str.replace(",", "").replace("¥", "").replace("円", ""))
-        except ValueError:
-            user_id = body["user"]["id"]
-            client.chat_postMessage(
-                channel=user_id,
-                text=f"❌ 金額の形式が正しくありません: {amount_str}"
-            )
-            return
-
-        from api.services.invoice_fetcher import invoice_fetcher
-
-        now = datetime.now().isoformat()
-        row = [
-            str(uuid.uuid4()),  # id
-            name,               # name
-            vendor,             # vendor
-            str(amount),        # amount
-            "JPY",              # currency
-            "1",                # billing_day
-            cycle,              # billing_cycle
-            payment,            # payment_method
-            fetch,              # fetch_method
-            email_subject,      # email_subject
-            "",                 # login_url
-            "true",             # is_active
-            now,                # created_at
-            now,                # updated_at
-        ]
-
-        invoice_fetcher.sheets.spreadsheets().values().append(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="subscriptions!A:N",
-            valueInputOption="USER_ENTERED",
-            body={"values": [row]}
-        ).execute()
-
-        cycle_text = {"monthly": "月次", "yearly": "年次", "quarterly": "四半期"}.get(cycle, cycle)
-        payment_text = {"card": "カード", "bank": "銀行振込"}.get(payment, payment)
-        fetch_text = {"email_pdf": "メール(PDF)", "email_link": "メール(リンク)", "login": "ログイン", "manual": "手動"}.get(fetch, fetch)
-
-        user_id = body["user"]["id"]
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"""✅ サブスクリプションを登録しました！
-
-• *サービス名*: {name}
-• *ベンダー*: {vendor}
-• *金額*: ¥{amount:,.0f} / {cycle_text}
-• *支払方法*: {payment_text}
-• *取得方法*: {fetch_text}"""
-        )
-
-    except Exception as e:
-        user_id = body["user"]["id"]
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"❌ サブスク登録エラー: {str(e)}"
-        )
 
 
 @slack_app.view("add_email_rule_modal")
@@ -1328,15 +1134,23 @@ def handle_reconcile(ack, respond, body, client):
         # 照会実行
         reconcile_result = invoice_fetcher.reconcile_csv(transactions, text)
 
-        # マッチしたCSV取引のstatusを「matched」に更新
+        # マッチしたCSV取引・請求書の両方のstatusを「matched」に更新
         matched_items = reconcile_result.get("matched", [])
         if matched_items:
             batch_updates = []
             for m in matched_items:
-                sheet_row = m["transaction"].get("_sheet_row")
-                if sheet_row:
+                # csv_transactions のstatus更新
+                tx_sheet_row = m["transaction"].get("_sheet_row")
+                if tx_sheet_row:
                     batch_updates.append({
-                        "range": f"csv_transactions!G{sheet_row}",
+                        "range": f"csv_transactions!G{tx_sheet_row}",
+                        "values": [["matched"]]
+                    })
+                # invoices のstatus更新（フォールバック用）
+                inv_sheet_row = m["invoice"].get("_sheet_row")
+                if inv_sheet_row:
+                    batch_updates.append({
+                        "range": f"invoices!G{inv_sheet_row}",
                         "values": [["matched"]]
                     })
             if batch_updates:
