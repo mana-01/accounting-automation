@@ -1187,20 +1187,21 @@ class InvoiceFetcher:
                 # 日付の比較（同じ月かどうか）
                 date_match = False
                 if tx_date and inv_date:
-                    # 各種日付形式からYYYYMM部分を抽出
+                    # 日付文字列からYYYYMM部分を抽出（YYYY-MM-DDがデフォルト）
                     def extract_month(d: str) -> str:
                         d = d.strip()
-                        if len(d) >= 8 and d[:8].isdigit():
+                        if "-" in d and len(d) >= 7:
+                            # YYYY-MM-DD形式 (2026-02-15) ※デフォルト
+                            parts = d.split("-")
+                            if len(parts) >= 2:
+                                return f"{parts[0]}{parts[1].zfill(2)}"
+                        # フォールバック: その他の形式
+                        elif len(d) >= 8 and d[:8].isdigit():
                             # YYYYMMDD形式 (20260215)
                             return d[:6]
                         elif "/" in d and len(d) >= 7:
                             # YYYY/MM/DD形式 (2026/02/15)
                             parts = d.split("/")
-                            if len(parts) >= 2:
-                                return f"{parts[0]}{parts[1].zfill(2)}"
-                        elif "-" in d and len(d) >= 7:
-                            # YYYY-MM-DD形式 (2026-02-15)
-                            parts = d.split("-")
                             if len(parts) >= 2:
                                 return f"{parts[0]}{parts[1].zfill(2)}"
                         return d[:6] if len(d) >= 6 else ""
