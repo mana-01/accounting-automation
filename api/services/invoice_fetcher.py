@@ -1186,24 +1186,17 @@ class InvoiceFetcher:
         ステップ1: 日付(YYYY-MM-DD完全一致) + 金額一致 → matched
         ステップ2: 名前の部分一致 + 金額一致 → matched（日付不問）
         ※金額一致は常に必須
+        ※csv_transactionsのstatus=matchedは呼び出し元でフィルタ済み
         """
         invoices = self.get_invoices_for_period(period_code)
         rules = self.get_email_rules()
         rule_names = {r["name"].lower() for r in rules}
 
-        # 既にmatchedの請求書を識別
-        already_matched_inv = set()
-        for idx, inv in enumerate(invoices):
-            if inv.get("status") == "matched":
-                already_matched_inv.add(idx)
-
-        matched = []          # 新規マッチ（statusをmatchedに更新する）
-        used_invoices = set()  # 使用済み請求書（新規・既存問わず）
+        matched = []
+        used_invoices = set()
         unmatched_tx_indices = set(range(len(transactions)))
-        already_matched_count = 0  # 既に照合済みの取引数
 
         # --- ステップ1: 日付(YYYY-MM-DD) + 金額 で照合 ---
-        # 既にmatchedの請求書も照合対象に含め、対応する取引を「不足」から除外する
         for tx_idx, tx in enumerate(transactions):
             tx_amount = tx.get("amount", 0)
             tx_date = self._normalize_date(tx.get("date", ""))
@@ -1221,10 +1214,7 @@ class InvoiceFetcher:
 
                 inv_date = self._normalize_date(inv.get("date", ""))
                 if tx_date == inv_date:
-                    if inv_idx in already_matched_inv:
-                        already_matched_count += 1
-                    else:
-                        matched.append({"transaction": tx, "invoice": inv})
+                    matched.append({"transaction": tx, "invoice": inv})
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
                     break
@@ -1248,10 +1238,7 @@ class InvoiceFetcher:
 
                 inv_vendor_lower = inv["vendor"].lower()
                 if inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower:
-                    if inv_idx in already_matched_inv:
-                        already_matched_count += 1
-                    else:
-                        matched.append({"transaction": tx, "invoice": inv})
+                    matched.append({"transaction": tx, "invoice": inv})
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
                     break
@@ -1279,7 +1266,6 @@ class InvoiceFetcher:
             "total_transactions": len(transactions),
             "matched_count": len(matched),
             "missing_count": len(missing),
-            "already_matched_count": already_matched_count
         }
 
 
