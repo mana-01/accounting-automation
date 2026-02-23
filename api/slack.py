@@ -1050,23 +1050,30 @@ def handle_reconcile(ack, respond, body, client):
                 if len(tx_date) >= 8 and tx_date[:8].isdigit():
                     # YYYYMMDD形式 (20250915)
                     tx_month = tx_date[:6]  # 202509
-                elif "/" in tx_date and len(tx_date) >= 7:
-                    # YYYY/MM/DD形式 (2025/09/15)
+                elif "/" in tx_date:
+                    # YYYY/MM/DD形式 (2025/09/15, 2025/9/15 等)
                     parts = tx_date.split("/")
                     if len(parts) >= 2:
-                        tx_month = f"{parts[0]}{parts[1]}"  # 202509
-                elif "-" in tx_date and len(tx_date) >= 7:
+                        tx_month = f"{parts[0]}{parts[1].zfill(2)}"  # 202509
+                elif "-" in tx_date:
                     # YYYY-MM-DD形式 (2025-09-15)
                     parts = tx_date.split("-")
                     if len(parts) >= 2:
-                        tx_month = f"{parts[0]}{parts[1]}"  # 202509
+                        tx_month = f"{parts[0]}{parts[1].zfill(2)}"  # 202509
 
                 if tx_month in target_months:
+                    # 金額パース（カンマ・通貨記号を除去）
+                    tx_amount_str = row[4] if len(row) > 4 else "0"
+                    try:
+                        tx_amount = int(str(tx_amount_str).replace(",", "").replace("¥", "").replace("円", "").strip())
+                    except (ValueError, TypeError):
+                        tx_amount = 0
+
                     transactions.append({
                         "type": row[1] if len(row) > 1 else "",
                         "date": tx_date,
                         "vendor": row[3] if len(row) > 3 else "",
-                        "amount": int(row[4]) if len(row) > 4 and row[4].isdigit() else 0
+                        "amount": tx_amount
                     })
 
         if not transactions:

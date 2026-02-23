@@ -1160,15 +1160,13 @@ class InvoiceFetcher:
         elif len(d) >= 8 and d[:8].isdigit():
             # YYYYMMDD形式 (20260215)
             return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
-        elif "/" in d and len(d) >= 10:
-            # YYYY/MM/DD形式 (2026/02/15)
+        elif "/" in d:
+            # YYYY/MM/DD形式 (2026/02/15, 2026/2/5 等ゼロパディングなしも対応)
             parts = d.split("/")
-            if len(parts) >= 3:
-                return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].zfill(2)}"
-        elif "/" in d and len(d) >= 7:
-            # YYYY/MM形式 (2026/02)
-            parts = d.split("/")
-            if len(parts) >= 2:
+            if len(parts) >= 3 and parts[2].strip():
+                return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].strip().zfill(2)}"
+            elif len(parts) >= 2:
+                # YYYY/MM形式 (2026/02)
                 return f"{parts[0]}-{parts[1].zfill(2)}-01"
         return d
 
@@ -1193,17 +1191,19 @@ class InvoiceFetcher:
         rules = self.get_email_rules()
         rule_names = {r["name"].lower() for r in rules}
 
-        # 既にmatchedの請求書はスキップ対象としてマーク
-        already_matched = set()
+        # 既にmatchedの請求書を識別
+        already_matched_inv = set()
         for idx, inv in enumerate(invoices):
             if inv.get("status") == "matched":
-                already_matched.add(idx)
+                already_matched_inv.add(idx)
 
-        matched = []
-        used_invoices = set(already_matched)  # matched済みの請求書は使用済みとして扱う
+        matched = []          # 新規マッチ（statusをmatchedに更新する）
+        used_invoices = set()  # 使用済み請求書（新規・既存問わず）
         unmatched_tx_indices = set(range(len(transactions)))
+        already_matched_count = 0  # 既に照合済みの取引数
 
         # --- ステップ1: 日付(YYYY-MM-DD) + 金額 で照合 ---
+        # 既にmatchedの請求書も照合対象に含め、対応する取引を「不足」から除外する
         for tx_idx, tx in enumerate(transactions):
             tx_amount = tx.get("amount", 0)
             tx_date = self._normalize_date(tx.get("date", ""))
@@ -1221,7 +1221,10 @@ class InvoiceFetcher:
 
                 inv_date = self._normalize_date(inv.get("date", ""))
                 if tx_date == inv_date:
-                    matched.append({"transaction": tx, "invoice": inv})
+                    if inv_idx in already_matched_inv:
+                        already_matched_count += 1
+                    else:
+                        matched.append({"transaction": tx, "invoice": inv})
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
                     break
@@ -1245,7 +1248,10 @@ class InvoiceFetcher:
 
                 inv_vendor_lower = inv["vendor"].lower()
                 if inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower:
-                    matched.append({"transaction": tx, "invoice": inv})
+                    if inv_idx in already_matched_inv:
+                        already_matched_count += 1
+                    else:
+                        matched.append({"transaction": tx, "invoice": inv})
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
                     break
@@ -1273,7 +1279,7 @@ class InvoiceFetcher:
             "total_transactions": len(transactions),
             "matched_count": len(matched),
             "missing_count": len(missing),
-            "already_matched_count": len(already_matched)
+            "already_matched_count": already_matched_count
         }
 
 
