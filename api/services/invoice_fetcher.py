@@ -626,13 +626,12 @@ class InvoiceFetcher:
             return False
 
     def _is_invoice_duplicate(self, vendor: str, amount_str: str, date: str) -> bool:
-        """金額一致 かつ (日付一致 or 名前部分一致) で既存invoiceとの重複を判定"""
+        """金額一致 かつ (日付±3日一致 or 名前部分一致/頭文字一致) で既存invoiceとの重複を判定"""
         new_amount = self._parse_amount(amount_str)
         if new_amount is None:
             return False
 
         new_date = self._normalize_date(date) if date else ""
-        new_vendor_lower = vendor.lower().strip() if vendor else ""
 
         try:
             result = self.sheets.spreadsheets().values().get(
@@ -649,15 +648,13 @@ class InvoiceFetcher:
                 if existing_amount is None or existing_amount != new_amount:
                     continue
 
-                # 金額が一致 → 日付 or 名前で追加チェック
                 existing_date = self._normalize_date(row[2]) if len(row) > 2 and row[2] else ""
-                if new_date and existing_date and new_date == existing_date:
+                if self._dates_match(new_date, existing_date):
                     return True
 
-                existing_vendor_lower = (row[0] if len(row) > 0 else "").lower().strip()
-                if new_vendor_lower and existing_vendor_lower:
-                    if existing_vendor_lower in new_vendor_lower or new_vendor_lower in existing_vendor_lower:
-                        return True
+                existing_vendor = row[0] if len(row) > 0 else ""
+                if self._vendors_match(vendor, existing_vendor):
+                    return True
 
             return False
         except Exception:
@@ -1171,8 +1168,9 @@ class InvoiceFetcher:
                 if len(row) >= 4:
                     inv_date = row[3] if len(row) > 3 else ""
 
-                    # 日付からYYYY-MMを抽出
-                    inv_month = inv_date[:7] if len(inv_date) >= 7 else ""
+                    # 日付を正規化してYYYY-MMを抽出
+                    normalized_date = self._normalize_date(inv_date)
+                    inv_month = normalized_date[:7] if len(normalized_date) >= 7 else ""
 
                     # 期間指定がない場合は全件、ある場合は月が一致するもの
                     if not period_code or inv_month in target_months:
@@ -1196,53 +1194,106 @@ class InvoiceFetcher:
     @staticmethod
     def _normalize_date(d: str) -> str:
         """日付文字列をYYYY-MM-DD形式に正規化する"""
-        d = d.strip()
+        if not d:
+            return ""
+        d = d.strip().replace(".", "-").replace("年", "-").replace("月", "-").replace("日", "")
+        d = d.strip().rstrip("-")
         if "-" in d and len(d) >= 10:
-            # YYYY-MM-DD形式 (2026-02-15)
             return d[:10]
         elif "-" in d and len(d) >= 7:
-            # YYYY-MM形式 (2026-02) → 日を01に
             return d[:7] + "-01"
         elif len(d) >= 8 and d[:8].isdigit():
-            # YYYYMMDD形式 (20260215)
             return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
         elif "/" in d:
-            # YYYY/MM/DD形式 (2026/02/15, 2026/2/5 等ゼロパディングなしも対応)
             parts = d.split("/")
             if len(parts) >= 3 and parts[2].strip():
                 return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].strip().zfill(2)}"
             elif len(parts) >= 2:
-                # YYYY/MM形式 (2026/02)
                 return f"{parts[0]}-{parts[1].zfill(2)}-01"
         return d
 
     @staticmethod
+    def _dates_match(date1: str, date2: str, tolerance_days: int = 3) -> bool:
+        """2つの正規化済み日付がtolerance_days以内なら一致とみなす"""
+        if not date1 or not date2:
+            return False
+        if date1 == date2:
+            return True
+        try:
+            from datetime import datetime, timedelta
+            d1 = datetime.strptime(date1[:10], "%Y-%m-%d")
+            d2 = datetime.strptime(date2[:10], "%Y-%m-%d")
+            return abs((d1 - d2).days) <= tolerance_days
+        except (ValueError, TypeError):
+            return date1 == date2
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """全角/半角を統一し、スペースを除去して正規化"""
+        import unicodedata
+        # NFKC正規化: 半角カナ→全角カナ、全角英数→半角英数
+        text = unicodedata.normalize("NFKC", text)
+        # 全種スペース除去
+        text = text.replace(" ", "").replace("\u3000", "").replace("\t", "")
+        return text.lower().strip()
+
+    @staticmethod
+    def _vendors_match(vendor1: str, vendor2: str) -> bool:
+        """ベンダー名の柔軟なマッチング（部分一致 + 頭文字一致 + 全角半角対応）"""
+        if not vendor1 or not vendor2:
+            return False
+        import unicodedata
+        # NFKC正規化 + スペース除去
+        v1 = unicodedata.normalize("NFKC", vendor1).replace(" ", "").replace("\u3000", "").replace("\t", "").lower().strip()
+        v2 = unicodedata.normalize("NFKC", vendor2).replace(" ", "").replace("\u3000", "").replace("\t", "").lower().strip()
+        if not v1 or not v2:
+            return False
+        # 部分文字列一致（スペース除去済みで比較）
+        if v1 in v2 or v2 in v1:
+            return True
+        # 頭文字一致（例: "AWS" ↔ "Amazon Web Services"）
+        # 頭文字比較にはスペース区切りが必要なので元の文字列を使用
+        w1_orig = unicodedata.normalize("NFKC", vendor1).lower().split()
+        w2_orig = unicodedata.normalize("NFKC", vendor2).lower().split()
+        if len(w1_orig) == 1 and len(v1) <= 5 and len(w2_orig) > 1:
+            initials = "".join(w[0] for w in w2_orig if w)
+            if v1 == initials:
+                return True
+        if len(w2_orig) == 1 and len(v2) <= 5 and len(w1_orig) > 1:
+            initials = "".join(w[0] for w in w1_orig if w)
+            if v2 == initials:
+                return True
+        return False
+
+    @staticmethod
     def _parse_amount(amount_str) -> int | None:
-        """金額文字列をintに変換。変換できない場合はNone"""
+        """金額文字列をintに変換。全角数字にも対応。変換できない場合はNone"""
         if not amount_str:
             return None
         try:
-            return int(str(amount_str).replace(",", "").replace("¥", "").replace("円", "").strip())
+            import unicodedata
+            s = unicodedata.normalize("NFKC", str(amount_str))
+            return int(s.replace(",", "").replace("¥", "").replace("円", "").replace("￥", "").strip())
         except (ValueError, TypeError):
             return None
 
     def reconcile_csv(self, transactions: list[dict], period_code: str) -> dict:
         """CSV取引と請求書を照合（2段階マッチ）
 
-        ステップ1: 日付(YYYY-MM-DD完全一致) + 金額一致 → matched
-        ステップ2: 名前の部分一致 + 金額一致 → matched（日付不問）
+        ステップ1: 日付(±3日以内) + 金額一致 → matched
+        ステップ2: 名前の部分一致/頭文字一致 + 金額一致 → matched（日付不問）
         ※金額一致は常に必須
         ※csv_transactionsのstatus=matchedは呼び出し元でフィルタ済み
         """
         invoices = self.get_invoices_for_period(period_code)
         rules = self.get_email_rules()
-        rule_names = {r["name"].lower() for r in rules}
+        rule_names = {self._normalize_text(r["name"]) for r in rules}
 
         matched = []
         used_invoices = set()
         unmatched_tx_indices = set(range(len(transactions)))
 
-        # --- ステップ1: 日付(YYYY-MM-DD) + 金額 で照合 ---
+        # --- ステップ1: 日付(±3日以内) + 金額 で照合 ---
         for tx_idx, tx in enumerate(transactions):
             tx_amount = tx.get("amount", 0)
             tx_date = self._normalize_date(tx.get("date", ""))
@@ -1259,16 +1310,15 @@ class InvoiceFetcher:
                     continue
 
                 inv_date = self._normalize_date(inv.get("date", ""))
-                if tx_date == inv_date:
+                if self._dates_match(tx_date, inv_date):
                     matched.append({"transaction": tx, "invoice": inv})
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
                     break
 
-        # --- ステップ2: 名前の部分一致 + 金額 で照合（日付不問） ---
+        # --- ステップ2: 名前の部分一致/頭文字一致 + 金額 で照合（日付不問） ---
         for tx_idx in sorted(unmatched_tx_indices):
             tx = transactions[tx_idx]
-            tx_vendor_lower = tx["vendor"].lower()
             tx_amount = tx.get("amount", 0)
 
             if not tx_amount:
@@ -1282,8 +1332,7 @@ class InvoiceFetcher:
                 if inv_amount is None or inv_amount != tx_amount:
                     continue
 
-                inv_vendor_lower = inv["vendor"].lower()
-                if inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower:
+                if self._vendors_match(tx["vendor"], inv["vendor"]):
                     matched.append({"transaction": tx, "invoice": inv})
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
@@ -1298,7 +1347,6 @@ class InvoiceFetcher:
             tx = transactions[tx_idx]
             tx_amount = tx.get("amount", 0)
             tx_date = self._normalize_date(tx.get("date", ""))
-            tx_vendor_lower = tx["vendor"].lower()
             is_duplicate = False
 
             if tx_amount:
@@ -1307,17 +1355,13 @@ class InvoiceFetcher:
                     inv_amount = self._parse_amount(inv.get("amount", ""))
                     if inv_amount is None or inv_amount != tx_amount:
                         continue
-                    # 日付一致チェック
                     inv_date = self._normalize_date(inv.get("date", ""))
-                    if tx_date and inv_date and tx_date == inv_date:
+                    if self._dates_match(tx_date, inv_date):
                         is_duplicate = True
                         break
-                    # 名前部分一致チェック
-                    inv_vendor_lower = inv["vendor"].lower()
-                    if inv_vendor_lower and tx_vendor_lower:
-                        if inv_vendor_lower in tx_vendor_lower or tx_vendor_lower in inv_vendor_lower:
-                            is_duplicate = True
-                            break
+                    if self._vendors_match(tx["vendor"], inv["vendor"]):
+                        is_duplicate = True
+                        break
 
             if is_duplicate:
                 duplicate_matched.append({"transaction": tx, "invoice": invoices[inv_idx]})
@@ -1332,7 +1376,7 @@ class InvoiceFetcher:
             missing.append(tx)
 
             vendor_registered = any(
-                rn in tx_vendor_lower or tx_vendor_lower in rn
+                self._vendors_match(tx["vendor"], rn)
                 for rn in rule_names
             )
             if not vendor_registered:
