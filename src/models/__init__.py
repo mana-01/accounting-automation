@@ -41,6 +41,11 @@ class ReconciliationStatus(Enum):
     PENDING_INVOICES = "pending_invoices"
 
 
+class ReminderCategory(Enum):
+    MANUAL = "manual"          # ②手動取得項目
+    FIXED_SCAN = "fixed_scan"  # ③固定スキャン
+
+
 @dataclass
 class Subscription:
     """サブスクリプション（定期支払い）の定義"""
@@ -247,6 +252,41 @@ class ReconciliationResult:
         ]
 
 
+@dataclass
+class ReminderItem:
+    """リマインド通知に表示する項目（②手動取得 / ③固定スキャン）"""
+    name: str
+    category: ReminderCategory = ReminderCategory.MANUAL
+    notes: str = ""
+    url: str = ""
+    is_active: bool = True
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_row(self) -> list:
+        return [
+            self.id,
+            self.name,
+            self.category.value,
+            self.notes,
+            self.url,
+            str(self.is_active),
+            self.created_at,
+        ]
+
+    @classmethod
+    def from_row(cls, row: list) -> "ReminderItem":
+        return cls(
+            id=row[0],
+            name=row[1] if len(row) > 1 else "",
+            category=ReminderCategory(row[2]) if len(row) > 2 and row[2] else ReminderCategory.MANUAL,
+            notes=row[3] if len(row) > 3 else "",
+            url=row[4] if len(row) > 4 else "",
+            is_active=row[5].lower() == "true" if len(row) > 5 and row[5] else True,
+            created_at=row[6] if len(row) > 6 else datetime.now().isoformat(),
+        )
+
+
 # Spreadsheet シート名
 SHEET_NAMES = {
     "SUBSCRIPTIONS": "subscriptions",
@@ -254,6 +294,7 @@ SHEET_NAMES = {
     "INVOICES": "invoices",
     "RECONCILIATION_HISTORY": "reconciliation_history",
     "SETTINGS": "settings",
+    "REMINDER_ITEMS": "reminder_items",
 }
 
 # 各シートのヘッダー
@@ -275,5 +316,8 @@ SHEET_HEADERS = {
     "reconciliation_history": [
         "id", "reconciliation_date", "period", "total_transactions",
         "matched_count", "unmatched_count", "missing_invoices_json", "status", "created_at"
+    ],
+    "reminder_items": [
+        "id", "name", "category", "notes", "url", "is_active", "created_at"
     ],
 }

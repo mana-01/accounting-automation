@@ -63,30 +63,46 @@ class Scheduler:
         """月次リマインドを送信"""
         try:
             period = spreadsheet_service.get_current_period()
-            subscriptions = spreadsheet_service.get_subscriptions(active_only=True)
 
-            # 今月の予定支出を計算
-            monthly_total = sum(
-                s.amount for s in subscriptions
-                if s.billing_cycle.value == "monthly"
-            )
+            # ②手動取得項目と③固定スキャンをシートから取得
+            manual_items = spreadsheet_service.get_reminder_items(active_only=True, category="manual")
+            fixed_scan_items = spreadsheet_service.get_reminder_items(active_only=True, category="fixed_scan")
+
+            # ②手動取得項目のテキスト構築
+            manual_lines = []
+            for item in manual_items:
+                line = f"• {item.name}"
+                if item.notes:
+                    line += f"（{item.notes}）"
+                if item.url:
+                    line = f"• <{item.url}|{item.name}>"
+                    if item.notes:
+                        line += f"（{item.notes}）"
+                manual_lines.append(line)
+            manual_text = "\n".join(manual_lines) if manual_lines else "• _項目なし_"
+
+            # ③固定スキャンのテキスト構築
+            fixed_lines = []
+            for item in fixed_scan_items:
+                line = f"• {item.name}"
+                if item.notes:
+                    line += f"（{item.notes}）"
+                fixed_lines.append(line)
+            fixed_text = "\n".join(fixed_lines) if fixed_lines else "• _項目なし_"
 
             blocks = [
                 {
                     "type": "header",
-                    "text": {"type": "plain_text", "text": f"📅 {period} 経理作業リマインド"}
+                    "text": {"type": "plain_text", "text": f"\U0001f4c5 {period} \u7d4c\u7406\u4f5c\u696d\u306f\u3058\u3081\u308b\u3088\uff01\U0001f31e"}
                 },
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": (
-                            f"今月の経理作業を開始しましょう！\n\n"
-                            f"*📋 登録サブスク:* {len(subscriptions)}件\n"
-                            f"*💰 予定支出:* ¥{monthly_total:,.0f}"
-                        )
+                        "text": "今月の経理作業を開始しましょう！\nまず以下の準備をお願いします。"
                     }
                 },
+                {"type": "divider"},
                 {
                     "type": "section",
                     "text": {
@@ -103,11 +119,39 @@ class Scheduler:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
+                        "text": f"*② 手動取得項目*\n{manual_text}"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*③ 固定スキャン*\n{fixed_text}"
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
                         "text": (
-                            "*② 手動取得項目*\n"
-                            "• Microsoft365（2026年6月まで）"
+                            "*流れ*\n"
+                            "☑︎ CSVを2つアップロード\n"
+                            "☑︎ `/accounting-reconcile` で足りていないものを確認\n"
+                            "☑︎ 不足分をSlackにアップロード\n"
+                            "☑︎ `/accounting-reconcile` で再確認\n"
+                            "☑︎ すべて揃ったら `/accounting-share` でエナリさんに共有"
                         )
                     }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "②③の項目は `/accounting-reminder-items` で編集できます"
+                        }
+                    ]
                 },
                 {
                     "type": "actions",
@@ -123,7 +167,7 @@ class Scheduler:
 
             self.slack_client.chat_postMessage(
                 channel=self.notification_channel,
-                text=f"📅 {period} 経理作業リマインド",
+                text=f"\U0001f4c5 {period} \u7d4c\u7406\u4f5c\u696d\u306f\u3058\u3081\u308b\u3088\uff01\U0001f31e",
                 blocks=blocks
             )
 
