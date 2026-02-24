@@ -991,15 +991,21 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             "type": invoice_type,
             "status": "pending"
         }
-        invoice_fetcher.record_invoice(invoice_data)
+        registered = invoice_fetcher.record_invoice(invoice_data)
 
         amount_text = f"\n💰 金額: ¥{amount:,}" if amount else ""
         vendor_text = f"\n🏢 請求元: {vendor}" if vendor != "手動アップロード" else ""
         summary_text = f"\n📝 内容: {pdf_info.get('summary')}" if pdf_info.get("summary") else ""
-        client.chat_postMessage(
-            channel=channel_id,
-            text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
-        )
+        if registered:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            )
+        else:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"⚠️ {type_name}請求書をDriveに保存しましたが、シートには登録済みのためスキップしました。\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            )
 
     except Exception as e:
         client.chat_postMessage(

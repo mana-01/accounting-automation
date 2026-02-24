@@ -649,11 +649,11 @@ class InvoiceFetcher:
                     continue
 
                 existing_date = self._normalize_date(row[2]) if len(row) > 2 and row[2] else ""
-                if self._dates_match(new_date, existing_date):
-                    return True
-
                 existing_vendor = row[0] if len(row) > 0 else ""
-                if self._vendors_match(vendor, existing_vendor):
+
+                # 金額一致 かつ 日付±3日一致 かつ ベンダー名一致 で重複判定
+                # （ベンダー名のみ一致で日付が異なる場合は別月の請求書として登録を許可）
+                if self._dates_match(new_date, existing_date) and self._vendors_match(vendor, existing_vendor):
                     return True
 
             return False
@@ -1011,9 +1011,12 @@ class InvoiceFetcher:
                                 "type": invoice_type,
                                 "status": "pending"
                             }
-                            self.record_invoice(invoice_data)
-                            results["registered"] += 1
-                            results["invoices"].append(invoice_data)
+                            recorded = self.record_invoice(invoice_data)
+                            if recorded:
+                                results["registered"] += 1
+                                results["invoices"].append(invoice_data)
+                            else:
+                                results["skipped"] += 1
 
                         except Exception as e:
                             results["errors"].append(f"{pdf_file['name']}: {str(e)}")
