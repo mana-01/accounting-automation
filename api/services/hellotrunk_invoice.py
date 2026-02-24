@@ -6,7 +6,7 @@ Google Driveのクレジットカードフォルダに格納する。
 
 テンプレートPDF配置先: Google Drive「Accounting-bot-invoices」直下に
   「template_ハロートランク.pdf」として配置する。
-ファイル名: {year}_ハロートランク_11970.pdf
+ファイル名: {YYYYMMDD}_ハロートランク_11970.pdf (例: 20260215_ハロートランク_11970.pdf)
 格納先: {year}年{month}月/{YYYYMM}_クレジット/
 """
 
@@ -202,9 +202,10 @@ def generate_monthly_invoice(year: int, month: int) -> bytes:
     return output_buf.getvalue()
 
 
-def get_invoice_filename(year: int) -> str:
-    """ファイル名を生成: {year}_ハロートランク_11970.pdf"""
-    return f"{year}_{VENDOR_NAME}_{FIXED_AMOUNT}.pdf"
+def get_invoice_filename(year: int, month: int) -> str:
+    """ファイル名を生成: {YYYYMMDD}_ハロートランク_11970.pdf"""
+    date_str = f"{year}{month:02d}{INVOICE_DAY:02d}"
+    return f"{date_str}_{VENDOR_NAME}_{FIXED_AMOUNT}.pdf"
 
 
 def generate_and_upload(target_year: int = None, target_month: int = None) -> dict:
@@ -230,7 +231,7 @@ def generate_and_upload(target_year: int = None, target_month: int = None) -> di
             target_month = today.month - 1
 
     period_code = f"{target_year}{target_month:02d}"
-    filename = get_invoice_filename(target_year)
+    filename = get_invoice_filename(target_year, target_month)
 
     # PDF生成
     pdf_data = generate_monthly_invoice(target_year, target_month)
