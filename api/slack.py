@@ -4,6 +4,7 @@ import os
 import json
 import re
 import traceback
+from datetime import datetime
 from flask import Flask, request, Response
 from slack_bolt import App as SlackApp
 from slack_bolt.adapter.flask import SlackRequestHandler
@@ -40,6 +41,7 @@ def handle_help(ack, respond):
 • `/accounting-register-invoices <期間>` - Drive上のPDFをシートに登録
 • `/accounting-invoices` - 取得済み請求書一覧
 • `/accounting-reconcile [期間]` - CSV照会を実行
+• `/accounting-share [期間]` - 税理士さんに請求書を共有
 
 *期間指定の例:*
 • `202602` - 2026年2月分のみ
@@ -51,6 +53,7 @@ def handle_help(ack, respond):
 3. CSVファイルをアップロード（Saisonまたは銀行）
 4. `/accounting-reconcile 202602` で照会
 5. 不足している請求書がリストアップされます
+6. `/accounting-share 202602` で税理士さんに共有
 
 *フォルダ構造:*
 📁 2026年2月/
@@ -1274,6 +1277,307 @@ def handle_reconcile(ack, respond, body, client):
         )
 
 
+@slack_app.command("/accounting-share")
+def handle_share(ack, respond, body, client):
+    """税理士さんにファイルを共有"""
+    ack()
+
+    text = body.get("text", "").strip()
+    user_id = body.get("user_id")
+
+    if not text:
+        # 今月をデフォルトに
+        now = datetime.now()
+        text = f"{now.year}{now.month:02d}"
+
+    respond({
+        "response_type": "ephemeral",
+        "text": f"📤 期間 `{text}` のファイルを税理士さんの共有フォルダにコピーしています..."
+    })
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher, parse_period
+
+        accountant_card_folder_id = os.environ.get("ACCOUNTANT_CARD_FOLDER_ID", "")
+        accountant_bank_folder_id = os.environ.get("ACCOUNTANT_BANK_FOLDER_ID", "")
+
+        if not accountant_card_folder_id and not accountant_bank_folder_id:
+            client.chat_postMessage(
+                channel=user_id,
+                text="❌ 税理士共有フォルダが設定されていません。環境変数 `ACCOUNTANT_CARD_FOLDER_ID` / `ACCOUNTANT_BANK_FOLDER_ID` を確認してください。"
+            )
+            return
+
+        # 期間をYYYY年M月形式に変換
+        periods = parse_period(text)
+        period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else text
+
+        # 請求書を取得
+        invoices = invoice_fetcher.get_invoices_for_period(text)
+
+        if not invoices:
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"⚠️ {period_label} の請求書がありません。先に `/accounting-fetch-invoices {text}` で取得してください。"
+            )
+            return
+
+        # email_rulesからサブスク情報を取得して支払い方法を判定
+        # invoicesのtypeフィールドまたはDriveフォルダ構造から判別
+        card_file_ids = []
+        bank_file_ids = []
+
+        for inv in invoices:
+            drive_url = inv.get("drive_url", "")
+            if not drive_url:
+                continue
+
+            # Drive URLからファイルIDを抽出
+            file_id = _extract_drive_file_id(drive_url)
+            if not file_id:
+                continue
+
+            inv_type = inv.get("type", "credit")
+            if inv_type == "bank":
+                bank_file_ids.append(file_id)
+            else:
+                card_file_ids.append(file_id)
+
+        # 共有フォルダにコピー
+        result = _copy_to_accountant_folders(
+            invoice_fetcher.drive,
+            period_label,
+            card_file_ids,
+            bank_file_ids,
+            accountant_card_folder_id,
+            accountant_bank_folder_id
+        )
+
+        # 結果メッセージ
+        result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+
+        if result["card_count"] > 0:
+            result_lines.append(
+                f"• 💳 クレジットカード: {result['card_count']}件 "
+                f"<{result['card_folder_url']}|フォルダを開く>"
+            )
+
+        if result["bank_count"] > 0:
+            result_lines.append(
+                f"• 🏦 銀行: {result['bank_count']}件 "
+                f"<{result['bank_folder_url']}|フォルダを開く>"
+            )
+
+        if result["card_count"] == 0 and result["bank_count"] == 0:
+            result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
+
+        client.chat_postMessage(
+            channel=user_id,
+            text="\n".join(result_lines)
+        )
+
+    except Exception as e:
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"❌ 税理士共有でエラーが発生しました: {str(e)}"
+        )
+
+
+@slack_app.action("share_with_accountant")
+def handle_share_with_accountant(ack, body, client, action):
+    """税理士さんに請求書ファイルを共有（ボタンアクション）"""
+    ack()
+
+    channel_id = body["channel"]["id"]
+    period_code = action["value"]
+
+    # ボタンを処理中メッセージに更新
+    client.chat_update(
+        channel=channel_id,
+        ts=body["message"]["ts"],
+        text=f"📤 {period_code} のファイルを税理士さんの共有フォルダにコピーしています...",
+        blocks=[
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"📤 *{period_code}* のファイルを税理士さんの共有フォルダにコピーしています..."
+                }
+            }
+        ]
+    )
+
+    try:
+        from api.services.invoice_fetcher import invoice_fetcher, parse_period
+
+        accountant_card_folder_id = os.environ.get("ACCOUNTANT_CARD_FOLDER_ID", "")
+        accountant_bank_folder_id = os.environ.get("ACCOUNTANT_BANK_FOLDER_ID", "")
+
+        # 期間ラベル
+        periods = parse_period(period_code)
+        period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else period_code
+
+        # 請求書を取得
+        invoices = invoice_fetcher.get_invoices_for_period(period_code)
+
+        card_file_ids = []
+        bank_file_ids = []
+
+        for inv in invoices:
+            drive_url = inv.get("drive_url", "")
+            if not drive_url:
+                continue
+
+            file_id = _extract_drive_file_id(drive_url)
+            if not file_id:
+                continue
+
+            inv_type = inv.get("type", "credit")
+            if inv_type == "bank":
+                bank_file_ids.append(file_id)
+            else:
+                card_file_ids.append(file_id)
+
+        result = _copy_to_accountant_folders(
+            invoice_fetcher.drive,
+            period_label,
+            card_file_ids,
+            bank_file_ids,
+            accountant_card_folder_id,
+            accountant_bank_folder_id
+        )
+
+        result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+
+        if result["card_count"] > 0:
+            result_lines.append(
+                f"• 💳 クレジットカード: {result['card_count']}件 "
+                f"<{result['card_folder_url']}|フォルダを開く>"
+            )
+
+        if result["bank_count"] > 0:
+            result_lines.append(
+                f"• 🏦 銀行: {result['bank_count']}件 "
+                f"<{result['bank_folder_url']}|フォルダを開く>"
+            )
+
+        if result["card_count"] == 0 and result["bank_count"] == 0:
+            result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
+
+        client.chat_update(
+            channel=channel_id,
+            ts=body["message"]["ts"],
+            text="\n".join(result_lines),
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": "\n".join(result_lines)
+                    }
+                }
+            ]
+        )
+
+    except Exception as e:
+        client.chat_update(
+            channel=channel_id,
+            ts=body["message"]["ts"],
+            text=f"❌ 税理士共有でエラーが発生しました: {str(e)}",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"❌ 税理士共有でエラーが発生しました: {str(e)}"
+                    }
+                }
+            ]
+        )
+
+
+def _extract_drive_file_id(drive_url: str) -> str:
+    """Google Drive URLからファイルIDを抽出"""
+    # https://drive.google.com/file/d/FILE_ID/view
+    match = re.search(r'/d/([a-zA-Z0-9_-]+)', drive_url)
+    if match:
+        return match.group(1)
+    # https://drive.google.com/open?id=FILE_ID
+    match = re.search(r'[?&]id=([a-zA-Z0-9_-]+)', drive_url)
+    if match:
+        return match.group(1)
+    return ""
+
+
+def _copy_to_accountant_folders(
+    drive_service,
+    period_label: str,
+    card_file_ids: list,
+    bank_file_ids: list,
+    accountant_card_folder_id: str,
+    accountant_bank_folder_id: str
+) -> dict:
+    """税理士共有フォルダに月別ファイルをコピー"""
+    result = {
+        "card_folder_url": "",
+        "bank_folder_url": "",
+        "card_count": 0,
+        "bank_count": 0,
+    }
+
+    def get_or_create_subfolder(parent_id: str, name: str) -> str:
+        query = (
+            f"name='{name}' and "
+            f"'{parent_id}' in parents and "
+            f"mimeType='application/vnd.google-apps.folder' and "
+            f"trashed=false"
+        )
+        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        files = results.get("files", [])
+        if files:
+            return files[0]["id"]
+
+        folder_metadata = {
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_id]
+        }
+        folder = drive_service.files().create(body=folder_metadata, fields="id").execute()
+        return folder["id"]
+
+    # クレジットカードファイルをコピー
+    if card_file_ids and accountant_card_folder_id:
+        card_subfolder_id = get_or_create_subfolder(accountant_card_folder_id, period_label)
+        for file_id in card_file_ids:
+            try:
+                drive_service.files().copy(
+                    fileId=file_id,
+                    body={"parents": [card_subfolder_id]},
+                    fields="id"
+                ).execute()
+                result["card_count"] += 1
+            except Exception as e:
+                print(f"Failed to copy card file {file_id}: {e}")
+        result["card_folder_url"] = f"https://drive.google.com/drive/folders/{card_subfolder_id}"
+
+    # 銀行ファイルをコピー
+    if bank_file_ids and accountant_bank_folder_id:
+        bank_subfolder_id = get_or_create_subfolder(accountant_bank_folder_id, period_label)
+        for file_id in bank_file_ids:
+            try:
+                drive_service.files().copy(
+                    fileId=file_id,
+                    body={"parents": [bank_subfolder_id]},
+                    fields="id"
+                ).execute()
+                result["bank_count"] += 1
+            except Exception as e:
+                print(f"Failed to copy bank file {file_id}: {e}")
+        result["bank_folder_url"] = f"https://drive.google.com/drive/folders/{bank_subfolder_id}"
+
+    return result
+
+
 # === Flask Routes ===
 
 @app.route("/", methods=["GET"])
@@ -1302,6 +1606,7 @@ def health():
             "/accounting-register-invoices",
             "/accounting-invoices",
             "/accounting-reconcile",
+            "/accounting-share",
         ]
     }
     return json.dumps(diag, indent=2, ensure_ascii=False), 200, {"Content-Type": "application/json"}
