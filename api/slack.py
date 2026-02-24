@@ -991,15 +991,21 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             "type": invoice_type,
             "status": "pending"
         }
-        invoice_fetcher.record_invoice(invoice_data)
+        registered = invoice_fetcher.record_invoice(invoice_data)
 
         amount_text = f"\n💰 金額: ¥{amount:,}" if amount else ""
         vendor_text = f"\n🏢 請求元: {vendor}" if vendor != "手動アップロード" else ""
         summary_text = f"\n📝 内容: {pdf_info.get('summary')}" if pdf_info.get("summary") else ""
-        client.chat_postMessage(
-            channel=channel_id,
-            text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
-        )
+        if registered:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            )
+        else:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"⚠️ {type_name}請求書をDriveに保存しましたが、シートには登録済みのためスキップしました。\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+            )
 
     except Exception as e:
         client.chat_postMessage(
@@ -1172,9 +1178,6 @@ def handle_reconcile(ack, respond, body, client):
         missing_count = reconcile_result["missing_count"]
         total = reconcile_result["total_transactions"]
 
-        # 除外するキーワード（手数料、利息など）
-        exclude_keywords = ["手数料", "利息", "振込手数料", "入金", "税金", "給与", "給料", "年金", "保険料"]
-
         # ベンダー名をクリーンアップ
         def clean_vendor_name(name: str) -> str:
             # Mastercard/Visa等のプレフィックスを削除
@@ -1187,32 +1190,26 @@ def handle_reconcile(ack, respond, body, client):
                 name = name[:25] + "..."
             return name.strip()
 
-        def should_exclude(vendor: str) -> bool:
-            return any(kw in vendor for kw in exclude_keywords)
-
         # マッチしたベンダーのサマリー作成
         from collections import defaultdict
         matched_vendors = defaultdict(lambda: {"count": 0, "total": 0})
         for m in matched_items:
             tx = m["transaction"]
-            vendor_name = clean_vendor_name(tx.get("vendor", "不明"))
-            if not vendor_name:
-                vendor_name = "不明"
+            vendor_name = clean_vendor_name(tx.get("vendor", "不明")) or "不明"
             matched_vendors[vendor_name]["count"] += 1
             matched_vendors[vendor_name]["total"] += tx.get("amount", 0)
 
-        # ベンダーごとにグルーピング（銀行・クレジット別）
+        # 不足取引をベンダーごとにグルーピング（銀行・クレジット別）
         bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
         credit_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        fee_count = 0
 
         for tx in reconcile_result["missing"]:
-            if should_exclude(tx["vendor"]):
+            if "手数料" in tx["vendor"]:
+                fee_count += 1
                 continue
 
-            cleaned_name = clean_vendor_name(tx["vendor"])
-            if not cleaned_name:
-                continue
-
+            cleaned_name = clean_vendor_name(tx["vendor"]) or tx["vendor"]
             tx_type = tx.get("type", "bank")
 
             if tx_type in ["credit", "saison"]:
@@ -1238,8 +1235,10 @@ def handle_reconcile(ack, respond, body, client):
 
 • 総取引数: {total}件
 • ✅ 今回一致: {matched_count}件
-• ❌ 不足: {missing_count}件
+• ❌ 不足: {missing_count - fee_count}件
 """
+        if fee_count > 0:
+            result_text += f"• 🔇 手数料（税金等除外）: {fee_count}件\n"
         if duplicate_count > 0:
             result_text += f"• 🔄 重複取引（一致済み）: {duplicate_count}件\n"
         if already_matched_count > 0:
@@ -1255,14 +1254,12 @@ def handle_reconcile(ack, respond, body, client):
             result_text += "\n_※ スプレッドシートの csv_transactions シートで status = matched を確認できます_\n"
 
         if bank_list:
-            result_text += f"\n*🏦 銀行振込（ルール登録推奨）:*{bank_list}\n"
+            result_text += f"\n*🏦 銀行振込:*{bank_list}\n"
 
         if credit_list:
-            result_text += f"\n*💳 クレジット（ルール登録推奨）:*{credit_list}\n"
+            result_text += f"\n*💳 クレジット:*{credit_list}\n"
 
-        if bank_list or credit_list:
-            result_text += "\n`/accounting-add-email-rule` でルール追加するか、PDFを手動アップロードしてください。"
-        elif not matched_vendors:
+        if not (bank_list or credit_list) and not matched_vendors:
             result_text += "\n✨ すべての取引が照合済みです！"
 
         client.chat_postMessage(
