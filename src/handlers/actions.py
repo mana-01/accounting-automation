@@ -8,6 +8,7 @@ from slack_bolt import App
 from ..models import Subscription, Invoice, BillingCycle, PaymentMethod, FetchMethod, FileNamingRule, InvoiceStatus
 from ..services.spreadsheet import spreadsheet_service
 from ..services.drive import drive_service
+from ..services.chatwork import chatwork_service
 
 
 def register_actions(app: App):
@@ -273,6 +274,15 @@ def register_actions(app: App):
                     f"• 💰 ¥{amount:,.0f}\n"
                     f"• 📁 <{upload_result['web_view_link']}|Google Driveで表示>"
                 )
+            )
+
+            # Chatworkに通知
+            chatwork_service.notify_invoice_saved(
+                subscription_name=subscription_name,
+                amount=amount,
+                invoice_date=invoice_date,
+                period=period,
+                drive_url=upload_result["web_view_link"],
             )
 
         except Exception as e:

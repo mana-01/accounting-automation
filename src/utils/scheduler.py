@@ -7,6 +7,7 @@ from apscheduler.triggers.cron import CronTrigger
 from slack_sdk import WebClient
 
 from ..services.spreadsheet import spreadsheet_service
+from ..services.chatwork import chatwork_service
 
 
 class Scheduler:
@@ -116,6 +117,13 @@ class Scheduler:
                 channel=self.notification_channel,
                 text=f"📅 {period} 経理作業リマインド",
                 blocks=blocks
+            )
+
+            # Chatworkにも月次リマインドを送信
+            chatwork_service.notify_monthly_reminder(
+                period=period,
+                subscription_count=len(subscriptions),
+                monthly_total=monthly_total,
             )
 
             print(f"Monthly reminder sent for {period}")

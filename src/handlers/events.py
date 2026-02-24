@@ -7,6 +7,7 @@ from slack_bolt import App
 from ..services.csv_parser import csv_parser
 from ..services.reconciliation import reconciliation_service
 from ..services.spreadsheet import spreadsheet_service
+from ..services.chatwork import chatwork_service
 
 
 def register_events(app: App):
@@ -95,6 +96,19 @@ def register_events(app: App):
                         })
 
                     say(channel=channel_id, blocks=blocks)
+
+                    # Chatworkに照合結果を通知
+                    missing_names = [
+                        inv.get("name", "不明") if isinstance(inv, dict) else str(inv)
+                        for inv in (result.missing_invoices or [])
+                    ]
+                    chatwork_service.notify_reconciliation_complete(
+                        period=result.period,
+                        total=result.total_transactions,
+                        matched=result.matched_count,
+                        unmatched=result.unmatched_count,
+                        missing_invoices=missing_names,
+                    )
 
                 except Exception as e:
                     logger.error(f"Reconciliation error: {e}")

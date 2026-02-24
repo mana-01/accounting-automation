@@ -6,6 +6,7 @@ from datetime import datetime
 from ..services.spreadsheet import spreadsheet_service
 from ..services.reconciliation import reconciliation_service
 from ..services.drive import drive_service
+from ..services.chatwork import chatwork_service
 
 
 def register_commands(app: App):
@@ -39,7 +40,8 @@ def register_commands(app: App):
                             "• `/accounting-subscriptions` - サブスク一覧を表示\n"
                             "• `/accounting-add-subscription` - 新規サブスクを登録\n"
                             "• `/accounting-fetch-invoices` - メールから請求書を取得\n"
-                            "• `/accounting-invoices [期間]` - 請求書一覧を表示"
+                            "• `/accounting-invoices [期間]` - 請求書一覧を表示\n"
+                            "• `/accounting-notify-chatwork [メッセージ]` - Chatworkに状況を通知"
                         )
                     }
                 },
@@ -338,3 +340,43 @@ def register_commands(app: App):
         # 実際の取得処理は非同期で行うべき
         # ここでは簡易的にメッセージのみ返す
         # TODO: 実際のGmail取得処理を実装
+
+    @app.command("/accounting-notify-chatwork")
+    def handle_notify_chatwork(ack, respond, command):
+        """Chatworkに状況を通知"""
+        ack()
+
+        if not chatwork_service.enabled:
+            respond("❌ Chatwork連携が設定されていません。`.env` に `CHATWORK_API_TOKEN` と `CHATWORK_ROOM_ID` を設定してください。")
+            return
+
+        custom_message = command.get("text", "").strip()
+
+        try:
+            if custom_message:
+                # カスタムメッセージを送信
+                chatwork_service.notify_custom(
+                    title="経理ボットからのお知らせ",
+                    body=custom_message,
+                )
+                respond(f"✅ Chatworkにメッセージを送信しました:\n> {custom_message}")
+            else:
+                # 現在の状況レポートを送信
+                period = spreadsheet_service.get_current_period()
+                invoices = spreadsheet_service.get_invoices(period=period)
+                subscriptions = spreadsheet_service.get_subscriptions(active_only=True)
+
+                matched_count = len([i for i in invoices if i.status.value == "matched"])
+                pending_count = len([i for i in invoices if i.status.value == "pending"])
+
+                chatwork_service.notify_status_report(
+                    period=period,
+                    subscription_count=len(subscriptions),
+                    invoice_count=len(invoices),
+                    matched_count=matched_count,
+                    pending_count=pending_count,
+                )
+                respond(f"✅ Chatworkに {period} の状況レポートを送信しました。")
+
+        except Exception as e:
+            respond(f"❌ Chatwork通知に失敗しました: {str(e)}")
