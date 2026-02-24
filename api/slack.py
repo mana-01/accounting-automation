@@ -1210,13 +1210,16 @@ def handle_reconcile(ack, respond, body, client):
         # ベンダーごとにグルーピング（銀行・クレジット別）
         bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
         credit_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        excluded_count = 0
 
         for tx in reconcile_result["missing"]:
             if should_exclude(tx["vendor"]):
+                excluded_count += 1
                 continue
 
             cleaned_name = clean_vendor_name(tx["vendor"])
             if not cleaned_name:
+                excluded_count += 1
                 continue
 
             tx_type = tx.get("type", "bank")
@@ -1240,12 +1243,15 @@ def handle_reconcile(ack, respond, body, client):
         for name, data in credit_sorted:
             credit_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
 
+        invoice_missing_count = missing_count - excluded_count
         result_text = f"""📊 *照会結果 ({text})*
 
 • 総取引数: {total}件
 • ✅ 今回一致: {matched_count}件
-• ❌ 不足: {missing_count}件
+• ❌ 請求書不足: {invoice_missing_count}件
 """
+        if excluded_count > 0:
+            result_text += f"• 🔇 対象外（手数料・税金等）: {excluded_count}件\n"
         if duplicate_count > 0:
             result_text += f"• 🔄 重複取引（一致済み）: {duplicate_count}件\n"
         if already_matched_count > 0:
