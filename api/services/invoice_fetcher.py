@@ -1146,7 +1146,11 @@ class InvoiceFetcher:
         return transactions
 
     def get_invoices_for_period(self, period_code: str) -> list[dict]:
-        """指定期間の請求書一覧を取得（日付ベースでフィルタリング）"""
+        """指定期間の請求書一覧を取得（日付ベースでフィルタリング）
+
+        前後1ヶ月も含めて取得する。これにより月をまたぐ取引
+        （例: CSV取引が10月、invoiceの日付が9月末）でもマッチ可能になる。
+        """
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
@@ -1156,12 +1160,24 @@ class InvoiceFetcher:
             rows = result.get("values", [])
             invoices = []
 
-            # 期間コードから対象月のリストを生成
+            # 期間コードから対象月のリストを生成（前後1ヶ月を含む）
             periods = parse_period(period_code) if period_code else []
             target_months = set()
             for p in periods:
                 # YYYY-MM形式で対象月を追加
                 target_months.add(f"{p['year']}-{p['month']:02d}")
+            # 前後1ヶ月を追加（月またぎの取引に対応）
+            if target_months:
+                extended = set()
+                for ym in target_months:
+                    y, m = int(ym[:4]), int(ym[5:7])
+                    # 前月
+                    pm, py = (m - 1, y) if m > 1 else (12, y - 1)
+                    extended.add(f"{py}-{pm:02d}")
+                    # 翌月
+                    nm, ny = (m + 1, y) if m < 12 else (1, y + 1)
+                    extended.add(f"{ny}-{nm:02d}")
+                target_months.update(extended)
 
             # カラム: id(0), vendor(1), amount(2), date(3), source(4), drive_url(5), status(6), created_at(7)
             for row_idx, row in enumerate(rows):
