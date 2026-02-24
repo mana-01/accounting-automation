@@ -95,6 +95,24 @@ def register_actions(app: App):
             file_data = file_info["file"]
             file_name = file_data.get("name", "invoice.pdf")
 
+            # PDFをダウンロードしてGemini解析で請求日・金額を抽出
+            extracted_date = datetime.now().strftime("%Y-%m-%d")
+            extracted_amount = ""
+            download_url = file_data.get("url_private_download")
+            if download_url:
+                headers = {"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}"}
+                dl_response = requests.get(download_url, headers=headers)
+                if dl_response.status_code == 200:
+                    try:
+                        from api.services.invoice_fetcher import extract_invoice_data_with_gemini
+                        pdf_info = extract_invoice_data_with_gemini(dl_response.content)
+                        if pdf_info.get("date"):
+                            extracted_date = pdf_info["date"]
+                        if pdf_info.get("amount"):
+                            extracted_amount = str(pdf_info["amount"])
+                    except Exception as extract_err:
+                        logger.warning(f"PDF extraction failed, using defaults: {extract_err}")
+
             # サブスク選択モーダルを表示
             subscriptions = spreadsheet_service.get_subscriptions(active_only=True)
 
@@ -111,6 +129,15 @@ def register_actions(app: App):
                 "text": {"type": "plain_text", "text": "その他（新規）"},
                 "value": "new"
             })
+
+            # 金額の入力ブロック（抽出値があればプレースホルダーに反映）
+            amount_element = {
+                "type": "plain_text_input",
+                "action_id": "amount_input",
+                "placeholder": {"type": "plain_text", "text": "例: 10000"}
+            }
+            if extracted_amount:
+                amount_element["initial_value"] = extracted_amount
 
             client.views_open(
                 trigger_id=body["trigger_id"],
@@ -143,11 +170,7 @@ def register_actions(app: App):
                             "type": "input",
                             "block_id": "amount_block",
                             "label": {"type": "plain_text", "text": "金額 (円)"},
-                            "element": {
-                                "type": "plain_text_input",
-                                "action_id": "amount_input",
-                                "placeholder": {"type": "plain_text", "text": "例: 10000"}
-                            }
+                            "element": amount_element
                         },
                         {
                             "type": "input",
@@ -156,7 +179,7 @@ def register_actions(app: App):
                             "element": {
                                 "type": "datepicker",
                                 "action_id": "date_picker",
-                                "initial_date": datetime.now().strftime("%Y-%m-%d")
+                                "initial_date": extracted_date
                             }
                         }
                     ]
@@ -186,11 +209,14 @@ def register_actions(app: App):
             amount = float(amount_str.replace(",", "").replace("¥", "").replace("円", ""))
 
             # サブスク情報を取得
+            file_naming_rule = "rename"  # デフォルト
             if subscription_id == "new":
                 subscription_name = "未分類"
             else:
                 subscription = spreadsheet_service.get_subscription_by_id(subscription_id)
                 subscription_name = subscription.name if subscription else "不明"
+                if subscription:
+                    file_naming_rule = subscription.file_naming.value
 
             # ファイルをダウンロード
             file_info = client.files_info(file=file_id)
@@ -204,11 +230,21 @@ def register_actions(app: App):
             if response.status_code != 200:
                 raise Exception("ファイルのダウンロードに失敗しました")
 
+            # ファイル命名ルールに応じたファイル名を生成
+            if file_naming_rule == "original":
+                upload_file_name = file_name
+            else:
+                # Rename: {date}_{vendor}_{amount}.pdf
+                import re
+                safe_vendor = re.sub(r'[\\/:*?"<>|]', '', subscription_name).strip() or "unknown"
+                safe_amount = str(int(amount)) if amount else "0"
+                upload_file_name = f"{invoice_date}_{safe_vendor}_{safe_amount}.pdf"
+
             # Google Driveにアップロード
             period = f"{datetime.strptime(invoice_date, '%Y-%m-%d').year}年{datetime.strptime(invoice_date, '%Y-%m-%d').month}月"
             upload_result = drive_service.upload_invoice(
                 file_content=response.content,
-                file_name=f"{subscription_name}_{invoice_date}_{file_name}",
+                file_name=upload_file_name,
                 mime_type="application/pdf",
                 period=period
             )
