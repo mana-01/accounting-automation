@@ -5,7 +5,7 @@ import requests
 from datetime import datetime
 from slack_bolt import App
 
-from ..models import Subscription, Invoice, BillingCycle, PaymentMethod, FetchMethod, InvoiceStatus
+from ..models import Subscription, Invoice, BillingCycle, PaymentMethod, FetchMethod, FileNamingRule, InvoiceStatus
 from ..services.spreadsheet import spreadsheet_service
 from ..services.drive import drive_service
 
@@ -28,6 +28,7 @@ def register_actions(app: App):
             cycle = values["cycle_block"]["cycle_select"]["selected_option"]["value"]
             payment = values["payment_block"]["payment_select"]["selected_option"]["value"]
             fetch = values["fetch_block"]["fetch_select"]["selected_option"]["value"]
+            file_naming = values["file_naming_block"]["file_naming_select"]["selected_option"]["value"]
             email_subject = values["email_subject_block"]["email_subject_input"].get("value")
 
             # 金額をパース
@@ -50,6 +51,7 @@ def register_actions(app: App):
                 billing_cycle=BillingCycle(cycle),
                 payment_method=PaymentMethod(payment),
                 fetch_method=FetchMethod(fetch),
+                file_naming=FileNamingRule(file_naming),
                 email_subject=email_subject,
             )
 
@@ -58,13 +60,15 @@ def register_actions(app: App):
 
             # 確認メッセージを送信
             user_id = body["user"]["id"]
+            file_naming_label = "Rename (日付_ベンダー_金額)" if file_naming == "rename" else "Original (元のファイル名)"
             client.chat_postMessage(
                 channel=user_id,
                 text=(
                     f"✅ サブスクリプションを登録しました！\n"
                     f"• *{name}* ({vendor})\n"
                     f"• 💰 ¥{amount:,.0f} / {cycle}\n"
-                    f"• 取得方法: {fetch}"
+                    f"• 取得方法: {fetch}\n"
+                    f"• ファイル命名: {file_naming_label}"
                 )
             )
 
