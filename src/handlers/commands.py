@@ -141,6 +141,7 @@ def register_commands(app: App):
                     "manual": "✋"
                 }.get(sub.fetch_method.value, "❓")
 
+                naming_tag = "Rename" if sub.file_naming.value == "rename" else "Original"
                 blocks.append({
                     "type": "section",
                     "text": {
@@ -148,7 +149,7 @@ def register_commands(app: App):
                         "text": (
                             f"{status_emoji} *{sub.name}* ({sub.vendor})\n"
                             f"💰 ¥{sub.amount:,.0f} / {sub.billing_cycle.value}\n"
-                            f"{fetch_emoji} 取得方法: {sub.fetch_method.value}"
+                            f"{fetch_emoji} 取得方法: {sub.fetch_method.value} | 📎 命名: `{naming_tag}`"
                         )
                     }
                 })
@@ -248,6 +249,20 @@ def register_commands(app: App):
                                 {"text": {"type": "plain_text", "text": "メール (リンク)"}, "value": "email_link"},
                                 {"text": {"type": "plain_text", "text": "ログイン取得"}, "value": "login"},
                                 {"text": {"type": "plain_text", "text": "手動"}, "value": "manual"},
+                            ]
+                        }
+                    },
+                    {
+                        "type": "input",
+                        "block_id": "file_naming_block",
+                        "label": {"type": "plain_text", "text": "ファイル命名ルール"},
+                        "element": {
+                            "type": "static_select",
+                            "action_id": "file_naming_select",
+                            "initial_option": {"text": {"type": "plain_text", "text": "Rename (日付_ベンダー_金額)"}, "value": "rename"},
+                            "options": [
+                                {"text": {"type": "plain_text", "text": "Rename (日付_ベンダー_金額)"}, "value": "rename"},
+                                {"text": {"type": "plain_text", "text": "Original (元のファイル名)"}, "value": "original"},
                             ]
                         }
                     },
