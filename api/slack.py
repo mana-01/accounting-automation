@@ -1202,8 +1202,13 @@ def handle_reconcile(ack, respond, body, client):
         # 不足取引をベンダーごとにグルーピング（銀行・クレジット別）
         bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
         credit_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        fee_count = 0
 
         for tx in reconcile_result["missing"]:
+            if "手数料" in tx["vendor"]:
+                fee_count += 1
+                continue
+
             cleaned_name = clean_vendor_name(tx["vendor"]) or tx["vendor"]
             tx_type = tx.get("type", "bank")
 
@@ -1230,8 +1235,10 @@ def handle_reconcile(ack, respond, body, client):
 
 • 総取引数: {total}件
 • ✅ 今回一致: {matched_count}件
-• ❌ 不足: {missing_count}件
+• ❌ 不足: {missing_count - fee_count}件
 """
+        if fee_count > 0:
+            result_text += f"• 🔇 手数料（税金等除外）: {fee_count}件\n"
         if duplicate_count > 0:
             result_text += f"• 🔄 重複取引（一致済み）: {duplicate_count}件\n"
         if already_matched_count > 0:
