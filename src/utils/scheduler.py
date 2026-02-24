@@ -36,6 +36,14 @@ class Scheduler:
             name="Daily invoice check"
         )
 
+        # 毎月3日の朝9時にハロートランク請求書を自動生成
+        self.scheduler.add_job(
+            self._generate_hellotrunk_invoice,
+            CronTrigger(day=3, hour=9, minute=0),
+            id="hellotrunk_invoice",
+            name="Monthly HelloTrunk invoice generation"
+        )
+
         self.scheduler.start()
         print("Scheduler started")
 
@@ -131,6 +139,40 @@ class Scheduler:
             print(f"Daily invoice check at {datetime.now()}")
         except Exception as e:
             print(f"Error in daily invoice check: {e}")
+
+    def _generate_hellotrunk_invoice(self):
+        """ハロートランク請求書を自動生成してDriveにアップロード（毎月3日実行）"""
+        try:
+            from api.services.hellotrunk_invoice import generate_and_upload
+
+            result = generate_and_upload()
+            period = f"{result['year']}年{result['month']}月"
+
+            if result.get("skipped"):
+                print(f"[hellotrunk] {period} - already exists, skipped")
+                return
+
+            print(f"[hellotrunk] {period} - generated: {result['filename']}")
+
+            # Slackに通知
+            self.slack_client.chat_postMessage(
+                channel=self.notification_channel,
+                text=(
+                    f"*ハロートランク請求書を自動生成しました*\n"
+                    f"対象月: {period}\n"
+                    f"ファイル名: `{result['filename']}`\n"
+                    f"<{result.get('web_view_link', '')}|Google Driveで表示>"
+                ),
+            )
+        except Exception as e:
+            print(f"Error generating HelloTrunk invoice: {e}")
+            try:
+                self.slack_client.chat_postMessage(
+                    channel=self.notification_channel,
+                    text=f"ハロートランク請求書の自動生成に失敗しました: {e}",
+                )
+            except Exception:
+                pass
 
     def send_missing_invoices_reminder(self, missing_count: int, period: str):
         """不足請求書のリマインドを送信"""

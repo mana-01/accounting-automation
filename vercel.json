@@ -5,9 +5,19 @@
       "maxDuration": 300
     }
   },
+  "crons": [
+    {
+      "path": "/api/cron/hellotrunk",
+      "schedule": "0 0 3 * *"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/slack",
+      "destination": "/api/slack"
+    },
+    {
+      "source": "/api/cron/:path*",
       "destination": "/api/slack"
     },
     {
@@ -16,4 +26,3 @@
     }
   ]
 }
-
