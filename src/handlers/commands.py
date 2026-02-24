@@ -3,6 +3,7 @@
 from slack_bolt import App
 from datetime import datetime
 
+from ..models import PaymentMethod
 from ..services.spreadsheet import spreadsheet_service
 from ..services.reconciliation import reconciliation_service
 from ..services.drive import drive_service
@@ -39,7 +40,8 @@ def register_commands(app: App):
                             "• `/accounting-subscriptions` - サブスク一覧を表示\n"
                             "• `/accounting-add-subscription` - 新規サブスクを登録\n"
                             "• `/accounting-fetch-invoices` - メールから請求書を取得\n"
-                            "• `/accounting-invoices [期間]` - 請求書一覧を表示"
+                            "• `/accounting-invoices [期間]` - 請求書一覧を表示\n"
+                            "• `/accounting-share [期間]` - 税理士さんに請求書を共有"
                         )
                     }
                 },
@@ -323,3 +325,95 @@ def register_commands(app: App):
         # 実際の取得処理は非同期で行うべき
         # ここでは簡易的にメッセージのみ返す
         # TODO: 実際のGmail取得処理を実装
+
+    @app.command("/accounting-share")
+    def handle_share(ack, respond, command):
+        """税理士さんにファイルを共有"""
+        ack()
+
+        try:
+            # 期間を取得（引数があれば使用、なければ今月）
+            period = command.get("text", "").strip()
+            if not period:
+                period = spreadsheet_service.get_current_period()
+
+            # 照会状況を確認
+            history = spreadsheet_service.get_reconciliation_history()
+            current_reconciliation = None
+            for h in history:
+                if h.period == period:
+                    current_reconciliation = h
+                    break
+
+            if not current_reconciliation:
+                respond(f"⚠️ {period} の照会がまだ実行されていません。先にCSVファイルをアップロードして照会を行ってください。")
+                return
+
+            if current_reconciliation.unmatched_count > 0:
+                respond(
+                    f"⚠️ {period} にはまだ {current_reconciliation.unmatched_count}件の不足請求書があります。\n"
+                    f"すべての照会が一致してから共有してください。"
+                )
+                return
+
+            respond(f"📤 {period} のファイルを税理士さんの共有フォルダにコピーしています...")
+
+            # 請求書とサブスク情報を取得
+            invoices = spreadsheet_service.get_invoices(period=period)
+            subscriptions = spreadsheet_service.get_subscriptions()
+
+            sub_payment_map = {}
+            for sub in subscriptions:
+                sub_payment_map[sub.id] = sub.payment_method
+
+            card_file_ids = []
+            bank_file_ids = []
+
+            for inv in invoices:
+                if not inv.drive_file_id:
+                    continue
+
+                payment_method = sub_payment_map.get(inv.subscription_id)
+                if payment_method == PaymentMethod.BANK:
+                    bank_file_ids.append(inv.drive_file_id)
+                else:
+                    card_file_ids.append(inv.drive_file_id)
+
+            share_result = drive_service.share_with_accountant(
+                period=period,
+                card_file_ids=card_file_ids,
+                bank_file_ids=bank_file_ids
+            )
+
+            result_lines = [f"✅ *{period}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+
+            if share_result["card_count"] > 0:
+                result_lines.append(
+                    f"• 💳 クレジットカード: {share_result['card_count']}件 "
+                    f"<{share_result['card_folder_url']}|フォルダを開く>"
+                )
+
+            if share_result["bank_count"] > 0:
+                result_lines.append(
+                    f"• 🏦 銀行: {share_result['bank_count']}件 "
+                    f"<{share_result['bank_folder_url']}|フォルダを開く>"
+                )
+
+            if share_result["card_count"] == 0 and share_result["bank_count"] == 0:
+                result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
+
+            respond({
+                "response_type": "in_channel",
+                "blocks": [
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "\n".join(result_lines)
+                        }
+                    }
+                ]
+            })
+
+        except Exception as e:
+            respond(f"❌ 税理士共有でエラーが発生しました: {str(e)}")

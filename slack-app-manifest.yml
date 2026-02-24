@@ -38,6 +38,10 @@ features:
       description: Reconcile CSV transactions with invoices
       usage_hint: "[YYYYMM]"
       should_escape: false
+    - command: /accounting-share
+      description: Share invoices with accountant
+      usage_hint: "[期間 例: 2026年2月]"
+      should_escape: false
 oauth_config:
   scopes:
     bot:

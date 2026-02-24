@@ -8,6 +8,7 @@ from slack_bolt import App
 from ..models import Subscription, Invoice, BillingCycle, PaymentMethod, FetchMethod, InvoiceStatus
 from ..services.spreadsheet import spreadsheet_service
 from ..services.drive import drive_service
+from ..services.reconciliation import reconciliation_service
 
 
 def register_actions(app: App):
@@ -254,3 +255,110 @@ def register_actions(app: App):
             text="ファイルをスキップしました。",
             blocks=[]
         )
+
+    @app.action("share_with_accountant")
+    def handle_share_with_accountant(ack, body, client, action, logger):
+        """税理士さんに請求書ファイルを共有"""
+        ack()
+
+        channel_id = body["channel"]["id"]
+        period = action["value"]
+
+        # ボタンを無効化して処理中メッセージに更新
+        client.chat_update(
+            channel=channel_id,
+            ts=body["message"]["ts"],
+            text=f"📤 {period} のファイルを税理士さんの共有フォルダにコピーしています...",
+            blocks=[
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"📤 *{period}* のファイルを税理士さんの共有フォルダにコピーしています..."
+                    }
+                }
+            ]
+        )
+
+        try:
+            # 請求書とサブスク情報を取得
+            invoices = spreadsheet_service.get_invoices(period=period)
+            subscriptions = spreadsheet_service.get_subscriptions()
+
+            # サブスクIDから支払い方法を引けるマップを作成
+            sub_payment_map = {}
+            for sub in subscriptions:
+                sub_payment_map[sub.id] = sub.payment_method
+
+            # 請求書をカード/銀行に振り分け
+            card_file_ids = []
+            bank_file_ids = []
+
+            for inv in invoices:
+                if not inv.drive_file_id:
+                    continue
+
+                payment_method = sub_payment_map.get(inv.subscription_id)
+                if payment_method == PaymentMethod.BANK:
+                    bank_file_ids.append(inv.drive_file_id)
+                else:
+                    # デフォルトはカード（サブスクが見つからない場合もカード扱い）
+                    card_file_ids.append(inv.drive_file_id)
+
+            # 共有フォルダにコピー
+            share_result = drive_service.share_with_accountant(
+                period=period,
+                card_file_ids=card_file_ids,
+                bank_file_ids=bank_file_ids
+            )
+
+            # 結果メッセージを作成
+            result_lines = [f"✅ *{period}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+
+            if share_result["card_count"] > 0:
+                result_lines.append(
+                    f"• 💳 クレジットカード: {share_result['card_count']}件 "
+                    f"<{share_result['card_folder_url']}|フォルダを開く>"
+                )
+
+            if share_result["bank_count"] > 0:
+                result_lines.append(
+                    f"• 🏦 銀行: {share_result['bank_count']}件 "
+                    f"<{share_result['bank_folder_url']}|フォルダを開く>"
+                )
+
+            if share_result["card_count"] == 0 and share_result["bank_count"] == 0:
+                result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
+
+            # メッセージを更新
+            client.chat_update(
+                channel=channel_id,
+                ts=body["message"]["ts"],
+                text="\n".join(result_lines),
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": "\n".join(result_lines)
+                        }
+                    }
+                ]
+            )
+
+        except Exception as e:
+            logger.error(f"Error sharing with accountant: {e}")
+            client.chat_update(
+                channel=channel_id,
+                ts=body["message"]["ts"],
+                text=f"❌ 税理士共有でエラーが発生しました: {str(e)}",
+                blocks=[
+                    {
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": f"❌ 税理士共有でエラーが発生しました: {str(e)}"
+                        }
+                    }
+                ]
+            )
