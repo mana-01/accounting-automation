@@ -14,6 +14,8 @@ class DriveService:
 
     def __init__(self):
         self.root_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+        self.accountant_card_folder_id = os.getenv("ACCOUNTANT_CARD_FOLDER_ID", "")
+        self.accountant_bank_folder_id = os.getenv("ACCOUNTANT_BANK_FOLDER_ID", "")
         self.service = self._build_service()
 
     def _build_service(self):
@@ -141,6 +143,107 @@ class DriveService:
     def get_folder_url(self, folder_id: str) -> str:
         """フォルダのURLを取得"""
         return f"https://drive.google.com/drive/folders/{folder_id}"
+
+    def _get_or_create_subfolder(self, parent_folder_id: str, folder_name: str) -> str:
+        """指定された親フォルダ内にサブフォルダを取得または作成"""
+        query = (
+            f"name='{folder_name}' and "
+            f"'{parent_folder_id}' in parents and "
+            f"mimeType='application/vnd.google-apps.folder' and "
+            f"trashed=false"
+        )
+
+        results = self.service.files().list(
+            q=query,
+            fields="files(id, name)"
+        ).execute()
+
+        files = results.get("files", [])
+        if files:
+            return files[0]["id"]
+
+        folder_metadata = {
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_folder_id]
+        }
+
+        folder = self.service.files().create(
+            body=folder_metadata,
+            fields="id"
+        ).execute()
+
+        print(f"Created subfolder: {folder_name} ({folder['id']})")
+        return folder["id"]
+
+    def copy_file_to_folder(self, file_id: str, target_folder_id: str, new_name: Optional[str] = None) -> dict:
+        """ファイルを指定フォルダにコピー"""
+        body = {"parents": [target_folder_id]}
+        if new_name:
+            body["name"] = new_name
+
+        copied_file = self.service.files().copy(
+            fileId=file_id,
+            body=body,
+            fields="id, name, webViewLink"
+        ).execute()
+
+        return {
+            "file_id": copied_file["id"],
+            "name": copied_file.get("name", ""),
+            "web_view_link": copied_file.get("webViewLink", "")
+        }
+
+    def share_with_accountant(
+        self,
+        period: str,
+        card_file_ids: list[str],
+        bank_file_ids: list[str]
+    ) -> dict:
+        """税理士共有フォルダに月別ファイルをコピー
+
+        Args:
+            period: 期間 (例: "2026年2月")
+            card_file_ids: クレジットカード関連の請求書ファイルID一覧
+            bank_file_ids: 銀行関連の請求書ファイルID一覧
+
+        Returns:
+            コピー結果の辞書 (card_folder_url, bank_folder_url, card_count, bank_count)
+        """
+        result = {
+            "card_folder_url": "",
+            "bank_folder_url": "",
+            "card_count": 0,
+            "bank_count": 0,
+        }
+
+        # クレジットカードファイルをコピー
+        if card_file_ids and self.accountant_card_folder_id:
+            card_subfolder_id = self._get_or_create_subfolder(
+                self.accountant_card_folder_id, period
+            )
+            for file_id in card_file_ids:
+                try:
+                    self.copy_file_to_folder(file_id, card_subfolder_id)
+                    result["card_count"] += 1
+                except Exception as e:
+                    print(f"Failed to copy card file {file_id}: {e}")
+            result["card_folder_url"] = self.get_folder_url(card_subfolder_id)
+
+        # 銀行ファイルをコピー
+        if bank_file_ids and self.accountant_bank_folder_id:
+            bank_subfolder_id = self._get_or_create_subfolder(
+                self.accountant_bank_folder_id, period
+            )
+            for file_id in bank_file_ids:
+                try:
+                    self.copy_file_to_folder(file_id, bank_subfolder_id)
+                    result["bank_count"] += 1
+                except Exception as e:
+                    print(f"Failed to copy bank file {file_id}: {e}")
+            result["bank_folder_url"] = self.get_folder_url(bank_subfolder_id)
+
+        return result
 
 
 # シングルトンインスタンス

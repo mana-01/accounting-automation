@@ -93,6 +93,27 @@ def register_events(app: App):
                             "type": "section",
                             "text": {"type": "mrkdwn", "text": missing_report}
                         })
+                    else:
+                        # 全件一致の場合、税理士共有ボタンを表示
+                        blocks.append({
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": "✅ すべての取引に対応する請求書が揃っています！"
+                            }
+                        })
+                        blocks.append({
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "税理士さんに共有する"},
+                                    "style": "primary",
+                                    "action_id": "share_with_accountant",
+                                    "value": result.period
+                                }
+                            ]
+                        })
 
                     say(channel=channel_id, blocks=blocks)
 
