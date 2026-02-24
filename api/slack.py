@@ -1646,7 +1646,7 @@ def _copy_to_accountant_folders(
 
 @app.route("/api/cron/hellotrunk", methods=["GET"])
 def cron_hellotrunk():
-    """毎月3日にVercel Cronから呼ばれるハロートランク請求書自動生成エンドポイント"""
+    """毎月1日にVercel Cronから呼ばれるハロートランク請求書自動生成エンドポイント（前月分）"""
     try:
         from api.services.hellotrunk_invoice import generate_and_upload
 
@@ -1680,6 +1680,69 @@ def cron_hellotrunk():
 
     except Exception as e:
         print(f"[cron/hellotrunk] Error: {e}")
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
+
+
+@app.route("/api/cron/fetch-invoices", methods=["GET"])
+def cron_fetch_invoices():
+    """毎月1日にVercel Cronから呼ばれるメール請求書自動取得エンドポイント（前月分）"""
+    try:
+        from datetime import date
+        from api.services.invoice_fetcher import invoice_fetcher
+
+        # 前月の期間コードを算出
+        today = date.today()
+        if today.month == 1:
+            target_year = today.year - 1
+            target_month = 12
+        else:
+            target_year = today.year
+            target_month = today.month - 1
+        period_code = f"{target_year}{target_month:02d}"
+        period = f"{target_year}年{target_month}月"
+
+        results = invoice_fetcher.fetch_invoices_by_period(period_code)
+
+        saved = results.get("saved", 0)
+        registered = results.get("registered", 0)
+        skipped = results.get("skipped", 0)
+        errors = results.get("errors", []) + results.get("register_errors", [])
+
+        # Slack通知
+        try:
+            notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+            slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+
+            if saved > 0 or errors:
+                summary_parts = [
+                    f"*メール請求書の自動取得が完了しました*",
+                    f"対象月: {period}",
+                    f"• Drive保存: {saved}件",
+                    f"• シート登録: {registered}件",
+                ]
+                if skipped > 0:
+                    summary_parts.append(f"• スキップ（重複）: {skipped}件")
+                if errors:
+                    summary_parts.append(f"• エラー: {len(errors)}件")
+
+                slack_client.chat_postMessage(
+                    channel=notification_channel,
+                    text="\n".join(summary_parts),
+                )
+        except Exception as slack_err:
+            print(f"[cron/fetch-invoices] Slack notification failed: {slack_err}")
+
+        return json.dumps({
+            "status": "completed",
+            "period": period,
+            "saved": saved,
+            "registered": registered,
+            "skipped": skipped,
+            "errors": len(errors),
+        }, ensure_ascii=False), 200
+
+    except Exception as e:
+        print(f"[cron/fetch-invoices] Error: {e}")
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
 
 
