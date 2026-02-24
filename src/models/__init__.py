@@ -105,38 +105,32 @@ class Subscription:
 @dataclass
 class EmailRule:
     """メールから請求書を取得するルール"""
-    subscription_id: str
-    subject_pattern: str  # 件名の正規表現パターン
-    sender_email: str
+    name: str  # サブスク/ルール名
+    sender: str  # 送信元メールアドレス
+    subject_pattern: str  # 件名パターン
     fetch_type: str = "attachment"  # "attachment" or "link"
-    link_selector: Optional[str] = None  # リンク取得時のCSSセレクタ
+    link_pattern: Optional[str] = None  # リンク取得時のパターン
     file_naming: str = "rename"  # "rename" or "original"
-    is_active: bool = True
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def to_row(self) -> list:
         return [
-            self.id,
-            self.subscription_id,
+            self.name,
+            self.sender,
             self.subject_pattern,
-            self.sender_email,
             self.fetch_type,
-            self.link_selector or "",
+            self.link_pattern or "",
             self.file_naming,
-            str(self.is_active),
         ]
 
     @classmethod
     def from_row(cls, row: list) -> "EmailRule":
         return cls(
-            id=row[0],
-            subscription_id=row[1],
-            subject_pattern=row[2],
-            sender_email=row[3],
-            fetch_type=row[4] if len(row) > 4 else "attachment",
-            link_selector=row[5] if len(row) > 5 and row[5] else None,
-            file_naming=row[6] if len(row) > 6 and row[6] in ("rename", "original") else "rename",
-            is_active=row[7].lower() == "true" if len(row) > 7 and row[7] else True,
+            name=row[0],
+            sender=row[1] if len(row) > 1 else "",
+            subject_pattern=row[2] if len(row) > 2 else "",
+            fetch_type=row[3] if len(row) > 3 else "attachment",
+            link_pattern=row[4] if len(row) > 4 and row[4] else None,
+            file_naming=row[5] if len(row) > 5 and row[5] in ("rename", "original") else "rename",
         )
 
 
@@ -264,8 +258,8 @@ SHEET_HEADERS = {
         "email_subject", "login_url", "is_active", "created_at", "updated_at"
     ],
     "email_rules": [
-        "id", "subscription_id", "subject_pattern", "sender_email",
-        "fetch_type", "link_selector", "file_naming", "is_active"
+        "name", "sender", "subject_pattern", "fetch_type",
+        "link_pattern", "file_naming"
     ],
     "invoices": [
         "id", "subscription_id", "subscription_name", "amount", "currency",

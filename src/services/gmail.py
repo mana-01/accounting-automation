@@ -84,8 +84,8 @@ class GmailService:
         """Gmail検索クエリを構築"""
         parts = []
 
-        if rule.sender_email:
-            parts.append(f"from:{rule.sender_email}")
+        if rule.sender:
+            parts.append(f"from:{rule.sender}")
 
         if rule.subject_pattern:
             # 正規表現パターンを簡易的なGmail検索に変換
