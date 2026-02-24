@@ -25,6 +25,11 @@ class FetchMethod(Enum):
     MANUAL = "manual"
 
 
+class FileNamingRule(Enum):
+    RENAME = "rename"      # {date}_{vendor}_{amount}.pdf に命名
+    ORIGINAL = "original"  # 添付ファイルの元ファイル名をそのまま使用
+
+
 class InvoiceStatus(Enum):
     PENDING = "pending"
     MATCHED = "matched"
@@ -47,6 +52,7 @@ class Subscription:
     billing_cycle: BillingCycle = BillingCycle.MONTHLY
     payment_method: PaymentMethod = PaymentMethod.CARD
     fetch_method: FetchMethod = FetchMethod.MANUAL
+    file_naming: FileNamingRule = FileNamingRule.RENAME  # ファイル命名ルール
     email_subject: Optional[str] = None  # メール件名パターン
     login_url: Optional[str] = None
     is_active: bool = True
@@ -66,6 +72,7 @@ class Subscription:
             self.billing_cycle.value,
             self.payment_method.value,
             self.fetch_method.value,
+            self.file_naming.value,
             self.email_subject or "",
             self.login_url or "",
             str(self.is_active),
@@ -86,11 +93,12 @@ class Subscription:
             billing_cycle=BillingCycle(row[6]) if row[6] else BillingCycle.MONTHLY,
             payment_method=PaymentMethod(row[7]) if row[7] else PaymentMethod.CARD,
             fetch_method=FetchMethod(row[8]) if row[8] else FetchMethod.MANUAL,
-            email_subject=row[9] if len(row) > 9 and row[9] else None,
-            login_url=row[10] if len(row) > 10 and row[10] else None,
-            is_active=row[11].lower() == "true" if len(row) > 11 and row[11] else True,
-            created_at=row[12] if len(row) > 12 else datetime.now().isoformat(),
-            updated_at=row[13] if len(row) > 13 else datetime.now().isoformat(),
+            file_naming=FileNamingRule(row[9]) if len(row) > 9 and row[9] and row[9] in ("rename", "original") else FileNamingRule.RENAME,
+            email_subject=row[10] if len(row) > 10 and row[10] else None,
+            login_url=row[11] if len(row) > 11 and row[11] else None,
+            is_active=row[12].lower() == "true" if len(row) > 12 and row[12] else True,
+            created_at=row[13] if len(row) > 13 else datetime.now().isoformat(),
+            updated_at=row[14] if len(row) > 14 else datetime.now().isoformat(),
         )
 
 
@@ -102,6 +110,7 @@ class EmailRule:
     sender_email: str
     fetch_type: str = "attachment"  # "attachment" or "link"
     link_selector: Optional[str] = None  # リンク取得時のCSSセレクタ
+    file_naming: str = "rename"  # "rename" or "original"
     is_active: bool = True
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -113,6 +122,7 @@ class EmailRule:
             self.sender_email,
             self.fetch_type,
             self.link_selector or "",
+            self.file_naming,
             str(self.is_active),
         ]
 
@@ -121,11 +131,12 @@ class EmailRule:
         return cls(
             id=row[0],
             subscription_id=row[1],
-            subject_pattern=row[2],
-            sender_email=row[3],
+            subject_pattern=row[2] if len(row) > 2 else "",
+            sender_email=row[3] if len(row) > 3 else "",
             fetch_type=row[4] if len(row) > 4 else "attachment",
             link_selector=row[5] if len(row) > 5 and row[5] else None,
-            is_active=row[6].lower() == "true" if len(row) > 6 and row[6] else True,
+            file_naming=row[6] if len(row) > 6 and row[6] in ("rename", "original") else "rename",
+            is_active=row[7].lower() == "true" if len(row) > 7 and row[7] else True,
         )
 
 
@@ -249,12 +260,12 @@ SHEET_NAMES = {
 SHEET_HEADERS = {
     "subscriptions": [
         "id", "name", "vendor", "amount", "currency", "billing_day",
-        "billing_cycle", "payment_method", "fetch_method", "email_subject",
-        "login_url", "is_active", "created_at", "updated_at"
+        "billing_cycle", "payment_method", "fetch_method", "file_naming",
+        "email_subject", "login_url", "is_active", "created_at", "updated_at"
     ],
     "email_rules": [
         "id", "subscription_id", "subject_pattern", "sender_email",
-        "fetch_type", "link_selector", "is_active"
+        "fetch_type", "link_selector", "file_naming", "is_active"
     ],
     "invoices": [
         "id", "subscription_id", "subscription_name", "amount", "currency",

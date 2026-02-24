@@ -315,23 +315,32 @@ class InvoiceFetcher:
         return self._sheets
 
     def get_email_rules(self) -> list[dict]:
-        """Spreadsheetからメール取得ルールを読み込む"""
+        """Spreadsheetからメール取得ルールを読み込む
+        シートヘッダー: id, subscription_id, subject_pattern, sender_email,
+                       fetch_type, link_selector, file_naming, is_active
+        """
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="email_rules!A2:E100"
+                range="email_rules!A2:H100"
             ).execute()
 
             rows = result.get("values", [])
             rules = []
             for row in rows:
                 if len(row) >= 3:
+                    # is_active チェック (H列, index 7)
+                    is_active = row[7].lower() == "true" if len(row) > 7 and row[7] else True
+                    if not is_active:
+                        continue
+
                     rules.append({
-                        "name": row[0],
-                        "sender": row[1] if len(row) > 1 else "",
-                        "subject_pattern": row[2] if len(row) > 2 else "",
-                        "fetch_type": row[3] if len(row) > 3 else "attachment",
-                        "link_pattern": row[4] if len(row) > 4 else "",
+                        "name": row[1] if len(row) > 1 else "",             # subscription_id をルール名として使用
+                        "sender": row[3] if len(row) > 3 else "",           # sender_email
+                        "subject_pattern": row[2] if len(row) > 2 else "",  # subject_pattern
+                        "fetch_type": row[4] if len(row) > 4 else "attachment",  # fetch_type
+                        "link_pattern": row[5] if len(row) > 5 else "",     # link_selector
+                        "file_naming": row[6] if len(row) > 6 and row[6] in ("rename", "original") else "rename",
                     })
             return rules
         except Exception as e:
@@ -765,19 +774,38 @@ class InvoiceFetcher:
 
                         if rule.get("fetch_type") == "attachment":
                             attachments = self.get_attachments(email)
+                            file_naming = rule.get("file_naming", "rename")
+
                             for att in attachments:
-                                # 先にGemini解析してファイル名を命名ルールで生成
-                                try:
-                                    pdf_info = extract_invoice_data_with_gemini(att["data"])
-                                except Exception as gemini_err:
+                                if file_naming == "original":
+                                    # Original: 元の添付ファイル名をそのまま使用
+                                    filename = att["filename"]
                                     pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
-                                    print(f"Gemini extraction failed: {gemini_err}")
+                                    inv_date = email_date
+                                    inv_vendor = rule["name"]
+                                    inv_amount = None
 
-                                inv_date = pdf_info.get("date") or email_date
-                                inv_vendor = pdf_info.get("vendor") or rule["name"]
-                                inv_amount = pdf_info.get("amount")
+                                    # シート登録用にGemini解析（ファイル名には使わない）
+                                    try:
+                                        pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                        inv_date = pdf_info.get("date") or email_date
+                                        inv_vendor = pdf_info.get("vendor") or rule["name"]
+                                        inv_amount = pdf_info.get("amount")
+                                    except Exception as gemini_err:
+                                        print(f"Gemini extraction failed: {gemini_err}")
+                                else:
+                                    # Rename: Gemini解析して命名ルールでファイル名を生成
+                                    try:
+                                        pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                    except Exception as gemini_err:
+                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                        print(f"Gemini extraction failed: {gemini_err}")
 
-                                filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
+                                    inv_date = pdf_info.get("date") or email_date
+                                    inv_vendor = pdf_info.get("vendor") or rule["name"]
+                                    inv_amount = pdf_info.get("amount")
+                                    filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
+
                                 drive_result = self.save_to_drive(
                                     att["data"],
                                     filename,
@@ -790,7 +818,7 @@ class InvoiceFetcher:
 
                                 results["saved"] += 1
 
-                                # Drive保存成功 → シートに登録（Gemini結果を再利用）
+                                # Drive保存成功 → シートに登録
                                 try:
                                     invoice_data = {
                                         "id": f"inv_{datetime.now().timestamp()}",
@@ -880,19 +908,38 @@ class InvoiceFetcher:
 
                             if rule.get("fetch_type") == "attachment":
                                 attachments = self.get_attachments(email)
+                                file_naming = rule.get("file_naming", "rename")
+
                                 for att in attachments:
-                                    # 先にGemini解析してファイル名を命名ルールで生成
-                                    try:
-                                        pdf_info = extract_invoice_data_with_gemini(att["data"])
-                                    except Exception as gemini_err:
+                                    if file_naming == "original":
+                                        # Original: 元の添付ファイル名をそのまま使用
+                                        filename = att["filename"]
                                         pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
-                                        print(f"Gemini extraction failed: {gemini_err}")
+                                        inv_date = email_date
+                                        inv_vendor = rule["name"]
+                                        inv_amount = None
 
-                                    inv_date = pdf_info.get("date") or email_date
-                                    inv_vendor = pdf_info.get("vendor") or rule["name"]
-                                    inv_amount = pdf_info.get("amount")
+                                        # シート登録用にGemini解析（ファイル名には使わない）
+                                        try:
+                                            pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                            inv_date = pdf_info.get("date") or email_date
+                                            inv_vendor = pdf_info.get("vendor") or rule["name"]
+                                            inv_amount = pdf_info.get("amount")
+                                        except Exception as gemini_err:
+                                            print(f"Gemini extraction failed: {gemini_err}")
+                                    else:
+                                        # Rename: Gemini解析して命名ルールでファイル名を生成
+                                        try:
+                                            pdf_info = extract_invoice_data_with_gemini(att["data"])
+                                        except Exception as gemini_err:
+                                            pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                            print(f"Gemini extraction failed: {gemini_err}")
 
-                                    filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
+                                        inv_date = pdf_info.get("date") or email_date
+                                        inv_vendor = pdf_info.get("vendor") or rule["name"]
+                                        inv_amount = pdf_info.get("amount")
+                                        filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
+
                                     drive_result = self.save_to_drive(
                                         att["data"],
                                         filename,
@@ -906,7 +953,7 @@ class InvoiceFetcher:
 
                                     results["saved"] += 1
 
-                                    # Drive保存成功 → シートに登録（Gemini結果を再利用）
+                                    # Drive保存成功 → シートに登録
                                     try:
                                         invoice_data = {
                                             "id": f"inv_{datetime.now().timestamp()}",
