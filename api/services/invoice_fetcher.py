@@ -185,12 +185,15 @@ def parse_invoice_filename(filename: str) -> dict:
     except (ValueError, TypeError):
         pass
 
-    # 日付の簡易バリデーション (YYYY-MM-DD or YYYYMMDD)
+    # 日付の簡易バリデーション (YYYY-MM-DD, YYYYMMDD, YYMMDD)
     if re.match(r'^\d{4}-\d{2}-\d{2}$', date):
         pass  # already in YYYY-MM-DD format
     elif re.match(r'^\d{8}$', date):
         # YYYYMMDD → YYYY-MM-DD に正規化
         date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
+    elif re.match(r'^\d{6}$', date):
+        # YYMMDD → YYYY-MM-DD に正規化（2000年代を仮定）
+        date = f"20{date[:2]}-{date[2:4]}-{date[4:6]}"
     else:
         date = None
 
