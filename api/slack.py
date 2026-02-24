@@ -40,6 +40,7 @@ def handle_help(ack, respond):
 • `/accounting-register-invoices <期間>` - Drive上のPDFをシートに登録
 • `/accounting-invoices` - 取得済み請求書一覧
 • `/accounting-reconcile [期間]` - CSV照会を実行
+• `/accounting-generate-hellotrunk [期間]` - ハロートランク請求書を手動生成
 
 *期間指定の例:*
 • `202602` - 2026年2月分のみ
@@ -1027,6 +1028,68 @@ def handle_skip_file(ack, body, client):
     )
 
 
+@slack_app.command("/accounting-generate-hellotrunk")
+def handle_generate_hellotrunk(ack, respond, body, client):
+    """ハロートランク請求書を手動生成"""
+    ack()
+
+    text = body.get("text", "").strip()
+    user_id = body.get("user_id")
+
+    respond({
+        "response_type": "ephemeral",
+        "text": "ハロートランク請求書を生成中..."
+    })
+
+    try:
+        from api.services.hellotrunk_invoice import generate_and_upload
+
+        target_year = None
+        target_month = None
+
+        # 期間指定がある場合 (例: 202602)
+        if text and len(text) == 6:
+            try:
+                target_year = int(text[:4])
+                target_month = int(text[4:6])
+            except ValueError:
+                client.chat_postMessage(
+                    channel=user_id,
+                    text="期間の形式が正しくありません。例: `202602`"
+                )
+                return
+
+        result = generate_and_upload(target_year, target_month)
+        period = f"{result['year']}年{result['month']}月"
+
+        if result.get("skipped"):
+            client.chat_postMessage(
+                channel=user_id,
+                text=f"ハロートランク請求書 ({period}) は既に存在します。スキップしました。"
+            )
+        else:
+            client.chat_postMessage(
+                channel=user_id,
+                text=(
+                    f"*ハロートランク請求書を生成しました*\n"
+                    f"対象月: {period}\n"
+                    f"ファイル名: `{result['filename']}`\n"
+                    f"<{result.get('web_view_link', '')}|Google Driveで表示>"
+                )
+            )
+
+    except FileNotFoundError as e:
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"テンプレートエラー: {e}"
+        )
+    except Exception as e:
+        client.chat_postMessage(
+            channel=user_id,
+            text=f"ハロートランク請求書生成エラー: {e}"
+        )
+
+
 @slack_app.command("/accounting-reconcile")
 def handle_reconcile(ack, respond, body, client):
     """CSV照会を実行"""
@@ -1276,6 +1339,45 @@ def handle_reconcile(ack, respond, body, client):
 
 # === Flask Routes ===
 
+@app.route("/api/cron/hellotrunk", methods=["GET"])
+def cron_hellotrunk():
+    """毎月3日にVercel Cronから呼ばれるハロートランク請求書自動生成エンドポイント"""
+    try:
+        from api.services.hellotrunk_invoice import generate_and_upload
+
+        result = generate_and_upload()
+        period = f"{result['year']}年{result['month']}月"
+
+        if result.get("skipped"):
+            return json.dumps({"status": "skipped", "period": period}, ensure_ascii=False), 200
+
+        # Slack通知
+        try:
+            notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+            slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+            slack_client.chat_postMessage(
+                channel=notification_channel,
+                text=(
+                    f"*ハロートランク請求書を自動生成しました*\n"
+                    f"対象月: {period}\n"
+                    f"ファイル名: `{result['filename']}`\n"
+                    f"<{result.get('web_view_link', '')}|Google Driveで表示>"
+                ),
+            )
+        except Exception as slack_err:
+            print(f"[cron/hellotrunk] Slack notification failed: {slack_err}")
+
+        return json.dumps({
+            "status": "generated",
+            "period": period,
+            "filename": result["filename"],
+        }, ensure_ascii=False), 200
+
+    except Exception as e:
+        print(f"[cron/hellotrunk] Error: {e}")
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
+
+
 @app.route("/", methods=["GET"])
 @app.route("/api/slack", methods=["GET"])
 def health():
@@ -1302,6 +1404,7 @@ def health():
             "/accounting-register-invoices",
             "/accounting-invoices",
             "/accounting-reconcile",
+            "/accounting-generate-hellotrunk",
         ]
     }
     return json.dumps(diag, indent=2, ensure_ascii=False), 200, {"Content-Type": "application/json"}
