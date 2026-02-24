@@ -249,12 +249,20 @@ def parse_period(period_str: str) -> list[dict]:
 def get_google_credentials(scopes: list[str]):
     """Google認証情報を取得"""
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON")
-    if creds_json:
-        creds_dict = json.loads(creds_json)
-        return service_account.Credentials.from_service_account_info(
-            creds_dict, scopes=scopes
-        )
-    raise ValueError("GOOGLE_CREDENTIALS_JSON not set")
+    if not creds_json:
+        raise ValueError("GOOGLE_CREDENTIALS_JSON not set")
+
+    creds_dict = json.loads(creds_json)
+    credentials = service_account.Credentials.from_service_account_info(
+        creds_dict, scopes=scopes
+    )
+
+    # ドメイン全体の委任: 指定ユーザーとして操作する
+    delegate_email = os.environ.get("GOOGLE_DELEGATE_EMAIL")
+    if delegate_email:
+        credentials = credentials.with_subject(delegate_email)
+
+    return credentials
 
 
 class InvoiceFetcher:
