@@ -523,7 +523,8 @@ class InvoiceFetcher:
         file = self.drive.files().create(
             body=file_metadata,
             media_body=media,
-            fields="id, webViewLink"
+            fields="id, webViewLink",
+            supportsAllDrives=True
         ).execute()
 
         return {
@@ -542,7 +543,9 @@ class InvoiceFetcher:
         results = self.drive.files().list(
             q=query,
             spaces="drive",
-            fields="files(id, name, webViewLink)"
+            fields="files(id, name, webViewLink)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         files = results.get("files", [])
@@ -562,7 +565,9 @@ class InvoiceFetcher:
         results = self.drive.files().list(
             q=query,
             spaces="drive",
-            fields="files(id, name)"
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         files = results.get("files", [])
@@ -578,7 +583,8 @@ class InvoiceFetcher:
 
         folder = self.drive.files().create(
             body=folder_metadata,
-            fields="id"
+            fields="id",
+            supportsAllDrives=True
         ).execute()
 
         return folder.get("id")
@@ -1085,7 +1091,9 @@ class InvoiceFetcher:
             f"trashed=false"
         )
         results = self.drive.files().list(
-            q=query, spaces="drive", fields="files(id)"
+            q=query, spaces="drive", fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
         files = results.get("files", [])
         return files[0]["id"] if files else None
@@ -1100,13 +1108,15 @@ class InvoiceFetcher:
         results = self.drive.files().list(
             q=query, spaces="drive",
             fields="files(id, name, webViewLink)",
-            orderBy="name"
+            orderBy="name",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
         return results.get("files", [])
 
     def _download_pdf_from_drive(self, file_id: str) -> bytes:
         """DriveからPDFファイルのバイナリデータをダウンロードする"""
-        request = self.drive.files().get_media(fileId=file_id)
+        request = self.drive.files().get_media(fileId=file_id, supportsAllDrives=True)
         buf = BytesIO()
         downloader = MediaIoBaseDownload(buf, request)
         done = False

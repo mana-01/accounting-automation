@@ -37,7 +37,9 @@ class DriveService:
 
         results = self.service.files().list(
             q=query,
-            fields="files(id, name)"
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         files = results.get("files", [])
@@ -53,7 +55,8 @@ class DriveService:
 
         folder = self.service.files().create(
             body=folder_metadata,
-            fields="id"
+            fields="id",
+            supportsAllDrives=True
         ).execute()
 
         print(f"Created folder: {period} ({folder['id']})")
@@ -71,7 +74,11 @@ class DriveService:
 
         # 既存ファイルをチェック
         query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"
-        existing = self.service.files().list(q=query, fields="files(id)").execute()
+        existing = self.service.files().list(
+            q=query, fields="files(id)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
 
         media = MediaIoBaseUpload(
             BytesIO(file_content),
@@ -84,7 +91,8 @@ class DriveService:
             file_id = existing["files"][0]["id"]
             self.service.files().update(
                 fileId=file_id,
-                media_body=media
+                media_body=media,
+                supportsAllDrives=True
             ).execute()
         else:
             # 新規ファイルを作成
@@ -95,14 +103,16 @@ class DriveService:
             result = self.service.files().create(
                 body=file_metadata,
                 media_body=media,
-                fields="id, webViewLink"
+                fields="id, webViewLink",
+                supportsAllDrives=True
             ).execute()
             file_id = result["id"]
 
         # ファイル情報を取得
         file_info = self.service.files().get(
             fileId=file_id,
-            fields="id, webViewLink"
+            fields="id, webViewLink",
+            supportsAllDrives=True
         ).execute()
 
         print(f"Uploaded invoice: {file_name} ({file_id})")
@@ -113,7 +123,10 @@ class DriveService:
 
     def get_file(self, file_id: str) -> bytes:
         """ファイルをダウンロード"""
-        request = self.service.files().get_media(fileId=file_id)
+        request = self.service.files().get_media(
+            fileId=file_id,
+            supportsAllDrives=True
+        )
         content = request.execute()
         return content
 
@@ -124,7 +137,9 @@ class DriveService:
         results = self.service.files().list(
             q=f"'{folder_id}' in parents and trashed=false",
             fields="files(id, name, webViewLink)",
-            orderBy="name"
+            orderBy="name",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         return [
@@ -138,7 +153,10 @@ class DriveService:
 
     def delete_file(self, file_id: str) -> None:
         """ファイルを削除"""
-        self.service.files().delete(fileId=file_id).execute()
+        self.service.files().delete(
+            fileId=file_id,
+            supportsAllDrives=True
+        ).execute()
 
     def get_folder_url(self, folder_id: str) -> str:
         """フォルダのURLを取得"""
@@ -155,7 +173,9 @@ class DriveService:
 
         results = self.service.files().list(
             q=query,
-            fields="files(id, name)"
+            fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
         ).execute()
 
         files = results.get("files", [])
@@ -170,7 +190,8 @@ class DriveService:
 
         folder = self.service.files().create(
             body=folder_metadata,
-            fields="id"
+            fields="id",
+            supportsAllDrives=True
         ).execute()
 
         print(f"Created subfolder: {folder_name} ({folder['id']})")
@@ -185,7 +206,8 @@ class DriveService:
         copied_file = self.service.files().copy(
             fileId=file_id,
             body=body,
-            fields="id, name, webViewLink"
+            fields="id, name, webViewLink",
+            supportsAllDrives=True
         ).execute()
 
         return {

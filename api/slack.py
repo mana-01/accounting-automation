@@ -1596,7 +1596,11 @@ def _copy_to_accountant_folders(
             f"mimeType='application/vnd.google-apps.folder' and "
             f"trashed=false"
         )
-        results = drive_service.files().list(q=query, fields="files(id, name)").execute()
+        results = drive_service.files().list(
+            q=query, fields="files(id, name)",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
         files = results.get("files", [])
         if files:
             return files[0]["id"]
@@ -1606,7 +1610,10 @@ def _copy_to_accountant_folders(
             "mimeType": "application/vnd.google-apps.folder",
             "parents": [parent_id]
         }
-        folder = drive_service.files().create(body=folder_metadata, fields="id").execute()
+        folder = drive_service.files().create(
+            body=folder_metadata, fields="id",
+            supportsAllDrives=True
+        ).execute()
         return folder["id"]
 
     # クレジットカードファイルをコピー
@@ -1617,7 +1624,8 @@ def _copy_to_accountant_folders(
                 drive_service.files().copy(
                     fileId=file_id,
                     body={"parents": [card_subfolder_id]},
-                    fields="id"
+                    fields="id",
+                    supportsAllDrives=True
                 ).execute()
                 result["card_count"] += 1
             except Exception as e:
@@ -1632,7 +1640,8 @@ def _copy_to_accountant_folders(
                 drive_service.files().copy(
                     fileId=file_id,
                     body={"parents": [bank_subfolder_id]},
-                    fields="id"
+                    fields="id",
+                    supportsAllDrives=True
                 ).execute()
                 result["bank_count"] += 1
             except Exception as e:
