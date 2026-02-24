@@ -1372,6 +1372,20 @@ def handle_share(ack, respond, body, client):
             )
             return
 
+        # フォルダへのアクセスを事前検証
+        errors = []
+        if accountant_card_folder_id:
+            err = _validate_folder_access(invoice_fetcher.drive, accountant_card_folder_id, "クレジットカード")
+            if err:
+                errors.append(err)
+        if accountant_bank_folder_id:
+            err = _validate_folder_access(invoice_fetcher.drive, accountant_bank_folder_id, "銀行振込")
+            if err:
+                errors.append(err)
+        if errors:
+            client.chat_postMessage(channel=user_id, text="\n\n".join(errors))
+            return
+
         # 期間をYYYY年M月形式に変換
         periods = parse_period(text)
         period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else text
@@ -1386,8 +1400,7 @@ def handle_share(ack, respond, body, client):
             )
             return
 
-        # email_rulesからサブスク情報を取得して支払い方法を判定
-        # invoicesのtypeフィールドまたはDriveフォルダ構造から判別
+        # Driveの親フォルダ名からcredit/bankを判定して振り分け
         card_file_ids = []
         bank_file_ids = []
 
@@ -1396,12 +1409,11 @@ def handle_share(ack, respond, body, client):
             if not drive_url:
                 continue
 
-            # Drive URLからファイルIDを抽出
             file_id = _extract_drive_file_id(drive_url)
             if not file_id:
                 continue
 
-            inv_type = inv.get("type", "credit")
+            inv_type = _classify_file_type(invoice_fetcher.drive, file_id)
             if inv_type == "bank":
                 bank_file_ids.append(file_id)
             else:
@@ -1418,22 +1430,26 @@ def handle_share(ack, respond, body, client):
         )
 
         # 結果メッセージ
-        result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+        total = result["card_count"] + result["bank_count"]
+        if total > 0:
+            result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+            if result["card_count"] > 0:
+                result_lines.append(
+                    f"• 💳 クレジットカード: {result['card_count']}件 "
+                    f"<{result['card_folder_url']}|フォルダを開く>"
+                )
+            if result["bank_count"] > 0:
+                result_lines.append(
+                    f"• 🏦 銀行: {result['bank_count']}件 "
+                    f"<{result['bank_folder_url']}|フォルダを開く>"
+                )
+        else:
+            result_lines = ["⚠️ コピー対象のファイルがありませんでした。"]
 
-        if result["card_count"] > 0:
-            result_lines.append(
-                f"• 💳 クレジットカード: {result['card_count']}件 "
-                f"<{result['card_folder_url']}|フォルダを開く>"
-            )
-
-        if result["bank_count"] > 0:
-            result_lines.append(
-                f"• 🏦 銀行: {result['bank_count']}件 "
-                f"<{result['bank_folder_url']}|フォルダを開く>"
-            )
-
-        if result["card_count"] == 0 and result["bank_count"] == 0:
-            result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
+        if result.get("errors"):
+            result_lines.append(f"\n⚠️ {len(result['errors'])}件のファイルでエラー:")
+            for err in result["errors"][:5]:
+                result_lines.append(f"  {err}")
 
         client.chat_postMessage(
             channel=user_id,
@@ -1477,6 +1493,25 @@ def handle_share_with_accountant(ack, body, client, action):
         accountant_card_folder_id = os.environ.get("ACCOUNTANT_CARD_FOLDER_ID", "")
         accountant_bank_folder_id = os.environ.get("ACCOUNTANT_BANK_FOLDER_ID", "")
 
+        # フォルダへのアクセスを事前検証
+        errors = []
+        if accountant_card_folder_id:
+            err = _validate_folder_access(invoice_fetcher.drive, accountant_card_folder_id, "クレジットカード")
+            if err:
+                errors.append(err)
+        if accountant_bank_folder_id:
+            err = _validate_folder_access(invoice_fetcher.drive, accountant_bank_folder_id, "銀行振込")
+            if err:
+                errors.append(err)
+        if errors:
+            error_text = "\n\n".join(errors)
+            client.chat_update(
+                channel=channel_id, ts=body["message"]["ts"],
+                text=error_text,
+                blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": error_text}}]
+            )
+            return
+
         # 期間ラベル
         periods = parse_period(period_code)
         period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else period_code
@@ -1484,6 +1519,7 @@ def handle_share_with_accountant(ack, body, client, action):
         # 請求書を取得
         invoices = invoice_fetcher.get_invoices_for_period(period_code)
 
+        # Driveの親フォルダ名からcredit/bankを判定して振り分け
         card_file_ids = []
         bank_file_ids = []
 
@@ -1496,7 +1532,7 @@ def handle_share_with_accountant(ack, body, client, action):
             if not file_id:
                 continue
 
-            inv_type = inv.get("type", "credit")
+            inv_type = _classify_file_type(invoice_fetcher.drive, file_id)
             if inv_type == "bank":
                 bank_file_ids.append(file_id)
             else:
@@ -1511,36 +1547,33 @@ def handle_share_with_accountant(ack, body, client, action):
             accountant_bank_folder_id
         )
 
-        result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+        total = result["card_count"] + result["bank_count"]
+        if total > 0:
+            result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
+            if result["card_count"] > 0:
+                result_lines.append(
+                    f"• 💳 クレジットカード: {result['card_count']}件 "
+                    f"<{result['card_folder_url']}|フォルダを開く>"
+                )
+            if result["bank_count"] > 0:
+                result_lines.append(
+                    f"• 🏦 銀行: {result['bank_count']}件 "
+                    f"<{result['bank_folder_url']}|フォルダを開く>"
+                )
+        else:
+            result_lines = ["⚠️ コピー対象のファイルがありませんでした。"]
 
-        if result["card_count"] > 0:
-            result_lines.append(
-                f"• 💳 クレジットカード: {result['card_count']}件 "
-                f"<{result['card_folder_url']}|フォルダを開く>"
-            )
+        if result.get("errors"):
+            result_lines.append(f"\n⚠️ {len(result['errors'])}件のファイルでエラー:")
+            for err in result["errors"][:5]:
+                result_lines.append(f"  {err}")
 
-        if result["bank_count"] > 0:
-            result_lines.append(
-                f"• 🏦 銀行: {result['bank_count']}件 "
-                f"<{result['bank_folder_url']}|フォルダを開く>"
-            )
-
-        if result["card_count"] == 0 and result["bank_count"] == 0:
-            result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
-
+        result_text = "\n".join(result_lines)
         client.chat_update(
             channel=channel_id,
             ts=body["message"]["ts"],
-            text="\n".join(result_lines),
-            blocks=[
-                {
-                    "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": "\n".join(result_lines)
-                    }
-                }
-            ]
+            text=result_text,
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": result_text}}]
         )
 
     except Exception as e:
@@ -1573,6 +1606,38 @@ def _extract_drive_file_id(drive_url: str) -> str:
     return ""
 
 
+def _classify_file_type(drive_service, file_id: str) -> str:
+    """ファイルの親フォルダ名からcredit/bankを判定"""
+    try:
+        file_info = drive_service.files().get(
+            fileId=file_id, fields="parents"
+        ).execute()
+        parents = file_info.get("parents", [])
+        if parents:
+            parent = drive_service.files().get(
+                fileId=parents[0], fields="name"
+            ).execute()
+            parent_name = parent.get("name", "")
+            if "銀行" in parent_name:
+                return "bank"
+    except Exception:
+        pass
+    return "credit"
+
+
+def _validate_folder_access(drive_service, folder_id: str, label: str) -> str | None:
+    """フォルダIDへのアクセスを検証。エラーがあればメッセージを返す"""
+    try:
+        drive_service.files().get(fileId=folder_id, fields="id,name").execute()
+        return None
+    except Exception:
+        return (
+            f"⚠️ {label}フォルダ (`{folder_id}`) にアクセスできません。\n"
+            f"• フォルダIDが正しいか確認してください\n"
+            f"• サービスアカウントにフォルダが共有されているか確認してください"
+        )
+
+
 def _copy_to_accountant_folders(
     drive_service,
     period_label: str,
@@ -1587,6 +1652,7 @@ def _copy_to_accountant_folders(
         "bank_folder_url": "",
         "card_count": 0,
         "bank_count": 0,
+        "errors": [],
     }
 
     def get_or_create_subfolder(parent_id: str, name: str) -> str:
@@ -1622,6 +1688,7 @@ def _copy_to_accountant_folders(
                 result["card_count"] += 1
             except Exception as e:
                 print(f"Failed to copy card file {file_id}: {e}")
+                result["errors"].append(f"💳 {file_id}: {e}")
         result["card_folder_url"] = f"https://drive.google.com/drive/folders/{card_subfolder_id}"
 
     # 銀行ファイルをコピー
@@ -1637,6 +1704,7 @@ def _copy_to_accountant_folders(
                 result["bank_count"] += 1
             except Exception as e:
                 print(f"Failed to copy bank file {file_id}: {e}")
+                result["errors"].append(f"🏦 {file_id}: {e}")
         result["bank_folder_url"] = f"https://drive.google.com/drive/folders/{bank_subfolder_id}"
 
     return result
