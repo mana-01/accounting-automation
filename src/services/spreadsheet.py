@@ -167,10 +167,14 @@ class SpreadsheetService:
 
     # ===== Email Rule methods =====
 
-    def get_email_rules(self) -> list[EmailRule]:
+    def get_email_rules(self, active_only: bool = True) -> list[EmailRule]:
         """メール取得ルール一覧を取得"""
         rows = self._read_sheet(SHEET_NAMES["EMAIL_RULES"])
-        return [EmailRule.from_row(row) for row in rows if row]
+        rules = [EmailRule.from_row(row) for row in rows if row]
+
+        if active_only:
+            return [r for r in rules if r.is_active]
+        return rules
 
     def add_email_rule(self, rule: EmailRule) -> None:
         """メール取得ルールを追加"""
