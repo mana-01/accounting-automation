@@ -35,6 +35,7 @@ def handle_help(ack, respond):
 
 *コマンド一覧:*
 • `/accounting-help` - このヘルプを表示
+• `/accounting-status` - 今月の照会状況を確認
 • `/accounting-add-subscription` - メール取得ルールを追加
 • `/accounting-subscriptions` - ルール一覧・削除
 • `/accounting-fetch-invoices [期間]` - メールから請求書を自動取得
