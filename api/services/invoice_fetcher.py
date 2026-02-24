@@ -1235,12 +1235,70 @@ class InvoiceFetcher:
         text = "".join(text.split())
         return text.lower().strip()
 
+    # カタカナ→ASCII/漢字の既知ベンダーエイリアス（CSV銀行摘要で頻出するカタカナ名 → 請求書上の名前）
+    _VENDOR_ALIASES: dict[str, list[str]] = {
+        "エヌティーティードコモ": ["nttドコモ", "ntt docomo", "docomo"],
+        "エヌティティドコモ": ["nttドコモ", "ntt docomo", "docomo"],
+        "ドコモ": ["nttドコモ", "ntt docomo", "docomo"],
+        "アマゾン": ["amazon"],
+        "アマゾンウエブサービス": ["amazon web services", "aws"],
+        "アマゾンウエブサービスジヤパン": ["amazon web services japan", "aws japan", "aws"],
+        "グーグル": ["google"],
+        "グーグルクラウドジャパン": ["google cloud japan", "google cloud"],
+        "グーグルジヤパン": ["google japan", "google"],
+        "マイクロソフト": ["microsoft"],
+        "アドビ": ["adobe"],
+        "セールスフォース": ["salesforce"],
+        "スラツク": ["slack"],
+        "スラック": ["slack"],
+        "ノーシヨン": ["notion"],
+        "ノーション": ["notion"],
+        "フイグマ": ["figma"],
+        "フィグマ": ["figma"],
+        "ギツトハブ": ["github"],
+        "ギットハブ": ["github"],
+        "チヤツトワーク": ["chatwork"],
+        "チャットワーク": ["chatwork"],
+        "サイボウズ": ["cybozu", "サイボウズ"],
+        "フリー": ["freee"],
+        "マネーフォワード": ["moneyforward", "マネーフォワード"],
+        "ヘンナイン": ["hennge"],
+        "クラウドサイン": ["cloudsign"],
+        "ラクス": ["rakus"],
+        "エックスサーバー": ["xserver"],
+        "サクラインターネツト": ["さくらインターネット", "sakura internet"],
+        "サクラインターネット": ["さくらインターネット", "sakura internet"],
+        "ソフトバンク": ["softbank"],
+        "ケイディディアイ": ["kddi"],
+        "オービーシー": ["obc", "奉行"],
+        "ヤフー": ["yahoo"],
+        "ライン": ["line"],
+        "ゼンデスク": ["zendesk"],
+        "トレロ": ["trello"],
+        "アトラシアン": ["atlassian"],
+        "ジラ": ["jira"],
+        "ズーム": ["zoom"],
+        "オートデスク": ["autodesk"],
+        "カゴヤジヤパン": ["kagoya", "カゴヤ"],
+        "カゴヤ": ["kagoya"],
+        "ジーエムオー": ["gmo"],
+        "ビッグローブ": ["biglobe"],
+        "ニフティ": ["nifty", "@nifty"],
+        "エヌティーティーコミュニケーションズ": ["nttコミュニケーションズ", "ntt communications"],
+        "エヌティーティーファイナンス": ["nttファイナンス", "ntt finance"],
+        "バリユードメイン": ["value-domain", "バリュードメイン"],
+    }
+
     @staticmethod
     def _strip_vendor_noise(name: str) -> str:
         """ベンダー名からCSV取引種別・銀行名・会社種別などのノイズを除去"""
         import re
         # CSV摘要のプレフィックス除去（振込、PE、デビット利用、etc.）
-        name = re.sub(r"^(振込|pe|デビット利用|クレジット|口座振替|引落|自振)\s*", "", name, flags=re.IGNORECASE)
+        name = re.sub(r"^(振込|pe|デビット利用|デビツト|クレジット|口座振替|引落|自振|カード|利用)\s*", "", name, flags=re.IGNORECASE)
+        # クレジットカードブランド除去
+        name = re.sub(r"^(Mastercard|MASTERCARD|Visa|VISA|JCB|AMEX|DINERS)\s*", "", name, flags=re.IGNORECASE)
+        # TID/番号除去（カード明細に付くことがある）
+        name = re.sub(r"\s*(TID|TIDF)[\w\d]+", "", name, flags=re.IGNORECASE)
         # 銀行名除去（カタカナの銀行名: ミツビシユーエフジエイ、ミツイスミトモ等）
         name = re.sub(
             r"^(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネツト|"
@@ -1249,15 +1307,26 @@ class InvoiceFetcher:
             "", name, flags=re.IGNORECASE
         )
         # 会社種別除去
-        name = re.sub(r"(株式会社|有限会社|合同会社|\(株\)|（株）|inc\.?|co\.?,?\s*ltd\.?|llc|corp\.?)", "", name, flags=re.IGNORECASE)
+        name = re.sub(r"(株式会社|有限会社|合同会社|一般社団法人|一般財団法人|\(株\)|（株）|inc\.?|co\.?,?\s*ltd\.?|llc|corp\.?)", "", name, flags=re.IGNORECASE)
         # 承認番号・長い数字除去
         name = re.sub(r"承認番号[：:]?\s*\d+", "", name)
         name = re.sub(r"\d{8,}", "", name)
         return name.strip()
 
     @classmethod
+    def _resolve_aliases(cls, name_clean: str) -> list[str]:
+        """ノイズ除去済みのベンダー名からエイリアス候補を返す"""
+        results = []
+        for kana, aliases in cls._VENDOR_ALIASES.items():
+            kana_clean = "".join(kana.split()).lower()
+            # カタカナ名がベンダー名に含まれていればエイリアスを追加
+            if kana_clean in name_clean or name_clean in kana_clean:
+                results.extend(a.lower() for a in aliases)
+        return results
+
+    @classmethod
     def _vendors_match(cls, vendor1: str, vendor2: str) -> bool:
-        """ベンダー名の柔軟なマッチング（部分一致 + ノイズ除去 + 頭文字一致 + 全角半角対応）"""
+        """ベンダー名の柔軟なマッチング（部分一致 + ノイズ除去 + エイリアス + 頭文字一致 + 全角半角対応）"""
         if not vendor1 or not vendor2:
             return False
         import unicodedata
@@ -1277,7 +1346,30 @@ class InvoiceFetcher:
         if v1_stripped and v2_stripped:
             if v1_stripped in v2_stripped or v2_stripped in v1_stripped:
                 return True
-        # 3. 頭文字一致（例: "AWS" ↔ "Amazon Web Services"）
+        # 3. カタカナ↔英字エイリアスマッチング
+        #    例: "エヌティーティードコモ" → ["nttドコモ", "docomo"] と "NTTドコモ" を比較
+        v1_aliases = cls._resolve_aliases(v1_stripped if v1_stripped else v1_clean)
+        v2_aliases = cls._resolve_aliases(v2_stripped if v2_stripped else v2_clean)
+        # v1のエイリアスがv2に含まれるか（またはその逆）
+        for alias in v1_aliases:
+            alias_clean = "".join(alias.split())
+            if alias_clean in v2_clean or v2_clean in alias_clean:
+                return True
+            if v2_stripped and (alias_clean in v2_stripped or v2_stripped in alias_clean):
+                return True
+        for alias in v2_aliases:
+            alias_clean = "".join(alias.split())
+            if alias_clean in v1_clean or v1_clean in alias_clean:
+                return True
+            if v1_stripped and (alias_clean in v1_stripped or v1_stripped in alias_clean):
+                return True
+        # エイリアス同士の比較
+        if v1_aliases and v2_aliases:
+            for a1 in v1_aliases:
+                for a2 in v2_aliases:
+                    if a1 == a2 or a1 in a2 or a2 in a1:
+                        return True
+        # 4. 頭文字一致（例: "AWS" ↔ "Amazon Web Services"）
         w1_orig = v1.lower().split()
         w2_orig = v2.lower().split()
         if len(w1_orig) == 1 and len(v1_clean) <= 5 and len(w2_orig) > 1:
@@ -1288,6 +1380,16 @@ class InvoiceFetcher:
             initials = "".join(w[0] for w in w1_orig if w)
             if v2_clean == initials:
                 return True
+        # 5. トークンベースの重複マッチング（3文字以上のトークンが一致すればマッチ）
+        #    例: "NTT ドコモ" と "エヌティーティー ドコモ" → "ドコモ"が一致
+        tokens1 = set(w for w in v1.lower().split() if len(w) >= 3)
+        tokens2 = set(w for w in v2.lower().split() if len(w) >= 3)
+        # ノイズ除去後のトークンも追加
+        tokens1.update(w for w in cls._strip_vendor_noise(v1).lower().split() if len(w) >= 3)
+        tokens2.update(w for w in cls._strip_vendor_noise(v2).lower().split() if len(w) >= 3)
+        common_tokens = tokens1 & tokens2
+        if common_tokens:
+            return True
         return False
 
     @staticmethod
@@ -1303,10 +1405,11 @@ class InvoiceFetcher:
             return None
 
     def reconcile_csv(self, transactions: list[dict], period_code: str) -> dict:
-        """CSV取引と請求書を照合（2段階マッチ）
+        """CSV取引と請求書を照合（3段階マッチ）
 
         ステップ1: 日付(±3日以内) + 金額一致 → matched
-        ステップ2: 名前の部分一致/頭文字一致 + 金額一致 → matched（日付不問）
+        ステップ2: 名前の部分一致/エイリアス/頭文字一致 + 金額一致 → matched（日付不問）
+        ステップ2.5: email_rulesのnameをブリッジとして、CSV取引とinvoiceの両方がルール名に一致 + 金額一致 → matched
         ※金額一致は常に必須
         ※csv_transactionsのstatus=matchedは呼び出し元でフィルタ済み
         """
@@ -1341,7 +1444,7 @@ class InvoiceFetcher:
                     unmatched_tx_indices.discard(tx_idx)
                     break
 
-        # --- ステップ2: 名前の部分一致/頭文字一致 + 金額 で照合（日付不問） ---
+        # --- ステップ2: 名前の部分一致/エイリアス/頭文字一致 + 金額 で照合（日付不問） ---
         for tx_idx in sorted(unmatched_tx_indices):
             tx = transactions[tx_idx]
             tx_amount = tx.get("amount", 0)
@@ -1362,6 +1465,39 @@ class InvoiceFetcher:
                     used_invoices.add(inv_idx)
                     unmatched_tx_indices.discard(tx_idx)
                     break
+
+        # --- ステップ2.5: email_rulesのnameをブリッジにして照合（金額一致必須） ---
+        # CSV取引vendor → ルール名に一致 → 同ルール名にinvoice vendorも一致 → マッチ
+        if unmatched_tx_indices and rules:
+            for tx_idx in sorted(unmatched_tx_indices):
+                tx = transactions[tx_idx]
+                tx_amount = tx.get("amount", 0)
+                if not tx_amount:
+                    continue
+
+                # このCSV取引がどのルール名に一致するかを探す
+                matching_rule_names = [
+                    rn for rn in rule_names
+                    if self._vendors_match(tx["vendor"], rn)
+                ]
+                if not matching_rule_names:
+                    continue
+
+                for inv_idx, inv in enumerate(invoices):
+                    if inv_idx in used_invoices:
+                        continue
+                    inv_amount = self._parse_amount(inv.get("amount", ""))
+                    if inv_amount is None or inv_amount != tx_amount:
+                        continue
+                    # invoiceのvendorが同じルール名に一致するかチェック
+                    for rn in matching_rule_names:
+                        if self._vendors_match(inv["vendor"], rn):
+                            matched.append({"transaction": tx, "invoice": inv})
+                            used_invoices.add(inv_idx)
+                            unmatched_tx_indices.discard(tx_idx)
+                            break
+                    if tx_idx not in unmatched_tx_indices:
+                        break
 
         # --- 未マッチ取引の処理 ---
         # ステップ3: 未マッチの取引が、既にマッチ済みのinvoiceと一致する場合は
