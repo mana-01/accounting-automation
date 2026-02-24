@@ -4,29 +4,26 @@
 テンプレートPDFの発行日のみ毎月15日に変更し、翌月3日に
 Google Driveのクレジットカードフォルダに格納する。
 
-テンプレートPDF配置先: templates/hellotrunk_template.pdf
-ファイル名: {year}_ハロートランク_11970.pdf
+テンプレートPDF配置先: Google Drive「Accounting-bot-invoices」直下に
+  「template_ハロートランク.pdf」として配置する。
+ファイル名: {YYYYMMDD}_ハロートランク_11970.pdf (例: 20260215_ハロートランク_11970.pdf)
 格納先: {year}年{month}月/{YYYYMM}_クレジット/
 """
 
 import re
 from datetime import date
 from io import BytesIO
-from pathlib import Path
 from typing import Optional
-
-# テンプレートPDFのパス
-TEMPLATE_DIR = Path(__file__).resolve().parent.parent.parent / "templates"
-TEMPLATE_PDF = TEMPLATE_DIR / "hellotrunk_template.pdf"
 
 # 固定値
 VENDOR_NAME = "ハロートランク"
 FIXED_AMOUNT = 11970
 INVOICE_DAY = 15
 
+# Google Drive上のテンプレートファイル名
+TEMPLATE_FILENAME = "template_ハロートランク.pdf"
+
 # 発行日フィールドの設定
-# pdfplumberで自動検出を試み、失敗時はフォールバック座標を使用する。
-# テンプレートPDF配置後、座標が合わない場合はfallback値を調整すること。
 DATE_FIELD_CONFIG = {
     "date_patterns": [
         r"\d{4}年\d{1,2}月\d{1,2}日",
@@ -34,7 +31,7 @@ DATE_FIELD_CONFIG = {
         r"\d{4}-\d{2}-\d{2}",
         r"令和\d{1,2}年\d{1,2}月\d{1,2}日",
     ],
-    # フォールバック座標 (PDFポイント, 左下原点)
+    # pdfplumberで自動検出できなかった場合のフォールバック座標 (PDFポイント, 左下原点)
     "fallback_x": 350,
     "fallback_y": 738,
     "fallback_width": 150,
@@ -43,12 +40,54 @@ DATE_FIELD_CONFIG = {
 }
 
 
-def _find_date_position(template_path: str) -> Optional[dict]:
+def _fetch_template_from_drive() -> bytes:
+    """
+    Google Drive「Accounting-bot-invoices」直下から
+    テンプレートPDF (template_ハロートランク.pdf) をダウンロードする。
+    """
+    from api.services.invoice_fetcher import invoice_fetcher
+    from googleapiclient.http import MediaIoBaseDownload
+
+    root_folder_id = invoice_fetcher.drive_folder_id
+
+    # テンプレートファイルを検索
+    query = (
+        f"name='{TEMPLATE_FILENAME}' and "
+        f"'{root_folder_id}' in parents and "
+        f"trashed=false"
+    )
+    results = invoice_fetcher.drive.files().list(
+        q=query,
+        spaces="drive",
+        fields="files(id, name)"
+    ).execute()
+
+    files = results.get("files", [])
+    if not files:
+        raise FileNotFoundError(
+            f"テンプレートPDFが見つかりません。\n"
+            f"Google Drive「Accounting-bot-invoices」直下に "
+            f"「{TEMPLATE_FILENAME}」を配置してください。"
+        )
+
+    file_id = files[0]["id"]
+
+    # ダウンロード
+    request = invoice_fetcher.drive.files().get_media(fileId=file_id)
+    buf = BytesIO()
+    downloader = MediaIoBaseDownload(buf, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    return buf.getvalue()
+
+
+def _find_date_position(pdf_data: bytes) -> Optional[dict]:
     """テンプレートPDF内の発行日テキストの位置を自動検出する。"""
     import pdfplumber
 
     try:
-        with pdfplumber.open(template_path) as pdf:
+        with pdfplumber.open(BytesIO(pdf_data)) as pdf:
             page = pdf.pages[0]
             words = page.extract_words()
             full_text = page.extract_text() or ""
@@ -61,10 +100,8 @@ def _find_date_position(template_path: str) -> Optional[dict]:
 
                 date_text = match.group(0)
 
-                # wordsからテキスト位置を検索
                 for word in words:
                     if word["text"] in date_text or date_text.startswith(word["text"]):
-                        # pdfplumberの座標系(上=0) → PDF座標系(下=0) に変換
                         word_height = word["bottom"] - word["top"]
                         pdf_y = page_height - word["bottom"]
                         return {
@@ -95,18 +132,15 @@ def _format_date_text(year: int, month: int, original_text: str = None) -> str:
 def generate_monthly_invoice(year: int, month: int) -> bytes:
     """
     指定月のハロートランク請求書PDFを生成する。
-    テンプレートPDFの発行日を当月15日に変更したPDFバイナリを返す。
+    Google DriveからテンプレートPDFを取得し、発行日を当月15日に変更する。
     """
     from pypdf import PdfReader, PdfWriter
     from reportlab.pdfgen import canvas
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 
-    if not TEMPLATE_PDF.exists():
-        raise FileNotFoundError(
-            f"テンプレートPDFが見つかりません: {TEMPLATE_PDF}\n"
-            f"templates/hellotrunk_template.pdf にハロートランクの元PDFを配置してください。"
-        )
+    # Google DriveからテンプレートPDFをダウンロード
+    template_data = _fetch_template_from_drive()
 
     # 日本語フォント登録
     try:
@@ -116,7 +150,7 @@ def generate_monthly_invoice(year: int, month: int) -> bytes:
         font_name = "Helvetica"
 
     # テンプレートPDFの発行日位置を検出
-    date_pos = _find_date_position(str(TEMPLATE_PDF))
+    date_pos = _find_date_position(template_data)
 
     if date_pos:
         x = date_pos["x"]
@@ -136,7 +170,7 @@ def generate_monthly_invoice(year: int, month: int) -> bytes:
     font_size = DATE_FIELD_CONFIG["font_size"]
 
     # テンプレートPDF読み込み
-    reader = PdfReader(str(TEMPLATE_PDF))
+    reader = PdfReader(BytesIO(template_data))
     template_page = reader.pages[0]
     page_width = float(template_page.mediabox.width)
     page_height = float(template_page.mediabox.height)
@@ -145,11 +179,9 @@ def generate_monthly_invoice(year: int, month: int) -> bytes:
     overlay_buf = BytesIO()
     c = canvas.Canvas(overlay_buf, pagesize=(page_width, page_height))
 
-    # 旧日付を白で塗りつぶし
     c.setFillColorRGB(1, 1, 1)
     c.rect(x - 2, y - 2, w + 4, h + 4, fill=True, stroke=False)
 
-    # 新しい日付を描画
     c.setFillColorRGB(0, 0, 0)
     c.setFont(font_name, font_size)
     c.drawString(x, y + 2, new_date_text)
@@ -170,9 +202,10 @@ def generate_monthly_invoice(year: int, month: int) -> bytes:
     return output_buf.getvalue()
 
 
-def get_invoice_filename(year: int) -> str:
-    """ファイル名を生成: {year}_ハロートランク_11970.pdf"""
-    return f"{year}_{VENDOR_NAME}_{FIXED_AMOUNT}.pdf"
+def get_invoice_filename(year: int, month: int) -> str:
+    """ファイル名を生成: {YYYYMMDD}_ハロートランク_11970.pdf"""
+    date_str = f"{year}{month:02d}{INVOICE_DAY:02d}"
+    return f"{date_str}_{VENDOR_NAME}_{FIXED_AMOUNT}.pdf"
 
 
 def generate_and_upload(target_year: int = None, target_month: int = None) -> dict:
@@ -198,7 +231,7 @@ def generate_and_upload(target_year: int = None, target_month: int = None) -> di
             target_month = today.month - 1
 
     period_code = f"{target_year}{target_month:02d}"
-    filename = get_invoice_filename(target_year)
+    filename = get_invoice_filename(target_year, target_month)
 
     # PDF生成
     pdf_data = generate_monthly_invoice(target_year, target_month)
@@ -210,8 +243,6 @@ def generate_and_upload(target_year: int = None, target_month: int = None) -> di
 
     # invoicesシートに記録
     if not drive_result.get("skipped"):
-        from datetime import datetime
-
         invoice_data = {
             "id": f"hellotrunk_{period_code}",
             "vendor": VENDOR_NAME,
