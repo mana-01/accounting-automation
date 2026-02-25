@@ -1269,10 +1269,12 @@ class InvoiceFetcher:
             return ""
         d = d.strip().replace(".", "-").replace("年", "-").replace("月", "-").replace("日", "")
         d = d.strip().rstrip("-")
-        if "-" in d and len(d) >= 10:
-            return d[:10]
-        elif "-" in d and len(d) >= 7:
-            return d[:7] + "-01"
+        if "-" in d:
+            parts = d.split("-")
+            if len(parts) >= 3 and parts[2].strip():
+                return f"{parts[0]}-{parts[1].zfill(2)}-{parts[2].strip().zfill(2)}"
+            elif len(parts) >= 2:
+                return f"{parts[0]}-{parts[1].zfill(2)}-01"
         elif len(d) >= 8 and d[:8].isdigit():
             return f"{d[:4]}-{d[4:6]}-{d[6:8]}"
         elif "/" in d:
