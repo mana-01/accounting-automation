@@ -1,5 +1,6 @@
 """Slack interactive action handlers."""
 
+import json
 import os
 import requests
 from datetime import datetime
@@ -99,14 +100,37 @@ def register_actions(app: App):
                 text=f"❌ 取得ルールの登録に失敗しました: {str(e)}"
             )
 
+    @app.action("save_invoice_credit")
+    def handle_save_invoice_credit(ack, body, client, action, say, logger):
+        """クレジット請求書として保存"""
+        ack()
+        _open_save_invoice_modal(body, client, action, say, logger, "credit")
+
+    @app.action("save_invoice_bank")
+    def handle_save_invoice_bank(ack, body, client, action, say, logger):
+        """銀行振込請求書として保存"""
+        ack()
+        _open_save_invoice_modal(body, client, action, say, logger, "bank")
+
+    @app.action("save_invoice_sales")
+    def handle_save_invoice_sales(ack, body, client, action, say, logger):
+        """売上請求書として保存"""
+        ack()
+        _open_save_invoice_modal(body, client, action, say, logger, "sales")
+
     @app.action("save_invoice_pdf")
     def handle_save_invoice_pdf(ack, body, client, action, say, logger):
-        """PDFを請求書として保存"""
+        """PDFを請求書として保存（後方互換）"""
         ack()
+        _open_save_invoice_modal(body, client, action, say, logger, "credit")
 
+    def _open_save_invoice_modal(body, client, action, say, logger, invoice_type: str):
+        """請求書保存モーダルを開く共通ロジック"""
         file_id = action["value"]
         channel_id = body["channel"]["id"]
-        user_id = body["user"]["id"]
+
+        type_names = {"credit": "クレジット", "bank": "銀行振込", "sales": "売上"}
+        type_label = type_names.get(invoice_type, "クレジット")
 
         try:
             # ファイル情報を取得
@@ -158,13 +182,16 @@ def register_actions(app: App):
             if extracted_amount:
                 amount_element["initial_value"] = extracted_amount
 
+            # private_metadata に file_id と invoice_type を格納
+            metadata = json.dumps({"file_id": file_id, "invoice_type": invoice_type})
+
             client.views_open(
                 trigger_id=body["trigger_id"],
                 view={
                     "type": "modal",
                     "callback_id": "save_invoice_modal",
-                    "private_metadata": file_id,
-                    "title": {"type": "plain_text", "text": "請求書を保存"},
+                    "private_metadata": metadata,
+                    "title": {"type": "plain_text", "text": f"{type_label}請求書を保存"},
                     "submit": {"type": "plain_text", "text": "保存"},
                     "close": {"type": "plain_text", "text": "キャンセル"},
                     "blocks": [
@@ -172,7 +199,7 @@ def register_actions(app: App):
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"📄 *{file_name}* を請求書として保存します。"
+                                "text": f"📄 *{file_name}* を{type_label}請求書として保存します。"
                             }
                         },
                         {
@@ -214,8 +241,20 @@ def register_actions(app: App):
         """請求書保存モーダルの送信処理"""
         ack()
 
-        file_id = view["private_metadata"]
+        # private_metadata から file_id と invoice_type を取得
+        raw_metadata = view["private_metadata"]
+        try:
+            metadata = json.loads(raw_metadata)
+            file_id = metadata["file_id"]
+            invoice_type = metadata.get("invoice_type", "credit")
+        except (json.JSONDecodeError, KeyError):
+            # 後方互換: 旧形式（file_id のみ）
+            file_id = raw_metadata
+            invoice_type = "credit"
+
         user_id = body["user"]["id"]
+        type_names = {"credit": "クレジット", "bank": "銀行振込", "sales": "売上"}
+        type_label = type_names.get(invoice_type, "クレジット")
 
         try:
             values = view["state"]["values"]
@@ -265,7 +304,8 @@ def register_actions(app: App):
                 file_content=response.content,
                 file_name=upload_file_name,
                 mime_type="application/pdf",
-                period=period
+                period=period,
+                invoice_type=invoice_type
             )
 
             # 請求書レコードを作成
@@ -278,6 +318,7 @@ def register_actions(app: App):
                 drive_url=upload_result["web_view_link"],
                 source_type="manual",
                 status=InvoiceStatus.PENDING,
+                invoice_type=invoice_type,
             )
 
             spreadsheet_service.add_invoice(invoice)
@@ -286,7 +327,7 @@ def register_actions(app: App):
             client.chat_postMessage(
                 channel=user_id,
                 text=(
-                    f"✅ 請求書を保存しました！\n"
+                    f"✅ {type_label}請求書を保存しました！\n"
                     f"• *{subscription_name}*\n"
                     f"• 📅 {invoice_date}\n"
                     f"• 💰 ¥{amount:,.0f}\n"
@@ -348,7 +389,7 @@ def register_actions(app: App):
             for sub in subscriptions:
                 sub_payment_map[sub.id] = sub.payment_method
 
-            # 請求書をカード/銀行に振り分け
+            # 請求書をカード/銀行に振り分け（売上はスキップ）
             card_file_ids = []
             bank_file_ids = []
 
@@ -356,8 +397,12 @@ def register_actions(app: App):
                 if not inv.drive_file_id:
                     continue
 
+                # 売上請求書はカード/銀行の共有対象外
+                if inv.invoice_type == "sales":
+                    continue
+
                 payment_method = sub_payment_map.get(inv.subscription_id)
-                if payment_method == PaymentMethod.BANK:
+                if payment_method == PaymentMethod.BANK or inv.invoice_type == "bank":
                     bank_file_ids.append(inv.drive_file_id)
                 else:
                     # デフォルトはカード（サブスクが見つからない場合もカード扱い）

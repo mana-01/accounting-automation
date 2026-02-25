@@ -609,6 +609,7 @@ class InvoiceFetcher:
         """
         請求書用フォルダ構造を作成
         例: 2025年9月/202509_クレジット
+        売上の場合は月フォルダ直下に格納
         """
         # period_code: "202509" -> "2025年9月"
         year = int(period_code[:4])
@@ -617,6 +618,10 @@ class InvoiceFetcher:
 
         # 月フォルダを作成
         month_folder_id = self._get_or_create_folder(month_folder_name, self.drive_folder_id)
+
+        # 売上の場合は月フォルダ直下
+        if invoice_type == "sales":
+            return month_folder_id
 
         # サブフォルダ名
         type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
