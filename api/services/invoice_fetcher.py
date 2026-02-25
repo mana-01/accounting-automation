@@ -1216,6 +1216,45 @@ class InvoiceFetcher:
 
         return transactions
 
+    def get_drive_files_for_period(self, period_code: str) -> dict:
+        """
+        指定期間のDriveフォルダから直接ファイルIDを取得する。
+        スプレッドシートを経由せず、Driveフォルダ構造から
+        クレジット/銀行振込に分類したファイルIDリストを返す。
+        """
+        periods = parse_period(period_code)
+        card_file_ids = []
+        bank_file_ids = []
+
+        for p in periods:
+            year = p["year"]
+            month = p["month"]
+            code = p["code"]
+            month_folder_name = f"{year}年{month}月"
+
+            month_folder_id = self._find_folder(month_folder_name, self.drive_folder_id)
+            if not month_folder_id:
+                continue
+
+            for invoice_type in ["credit", "bank"]:
+                type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
+                sub_folder_name = f"{code}_{type_name}"
+
+                sub_folder_id = self._find_folder(sub_folder_name, month_folder_id)
+                if not sub_folder_id:
+                    continue
+
+                pdf_files = self._list_pdfs_in_folder(sub_folder_id)
+                for pdf_file in pdf_files:
+                    file_id = pdf_file.get("id")
+                    if file_id:
+                        if invoice_type == "bank":
+                            bank_file_ids.append(file_id)
+                        else:
+                            card_file_ids.append(file_id)
+
+        return {"card": card_file_ids, "bank": bank_file_ids}
+
     def get_invoices_for_period(self, period_code: str) -> list[dict]:
         """指定期間の請求書一覧を取得（日付ベースでフィルタリング）"""
         try:

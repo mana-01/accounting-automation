@@ -1555,36 +1555,17 @@ def handle_share(ack, respond, body, client):
         periods = parse_period(text)
         period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else text
 
-        # 請求書を取得
-        invoices = invoice_fetcher.get_invoices_for_period(text)
+        # Driveフォルダから直接ファイルを取得（フォルダ構造が正式なソース）
+        drive_files = invoice_fetcher.get_drive_files_for_period(text)
+        card_file_ids = drive_files["card"]
+        bank_file_ids = drive_files["bank"]
 
-        if not invoices:
+        if not card_file_ids and not bank_file_ids:
             client.chat_postMessage(
                 channel=user_id,
                 text=f"⚠️ {period_label} の請求書がありません。先に `/accounting-fetch-invoices {text}` で取得してください。"
             )
             return
-
-        # email_rulesからサブスク情報を取得して支払い方法を判定
-        # invoicesのtypeフィールドまたはDriveフォルダ構造から判別
-        card_file_ids = []
-        bank_file_ids = []
-
-        for inv in invoices:
-            drive_url = inv.get("drive_url", "")
-            if not drive_url:
-                continue
-
-            # Drive URLからファイルIDを抽出
-            file_id = _extract_drive_file_id(drive_url)
-            if not file_id:
-                continue
-
-            inv_type = inv.get("type", "credit")
-            if inv_type == "bank":
-                bank_file_ids.append(file_id)
-            else:
-                card_file_ids.append(file_id)
 
         # 共有フォルダにコピー
         result = _copy_to_accountant_folders(
@@ -1660,26 +1641,10 @@ def handle_share_with_accountant(ack, body, client, action):
         periods = parse_period(period_code)
         period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else period_code
 
-        # 請求書を取得
-        invoices = invoice_fetcher.get_invoices_for_period(period_code)
-
-        card_file_ids = []
-        bank_file_ids = []
-
-        for inv in invoices:
-            drive_url = inv.get("drive_url", "")
-            if not drive_url:
-                continue
-
-            file_id = _extract_drive_file_id(drive_url)
-            if not file_id:
-                continue
-
-            inv_type = inv.get("type", "credit")
-            if inv_type == "bank":
-                bank_file_ids.append(file_id)
-            else:
-                card_file_ids.append(file_id)
+        # Driveフォルダから直接ファイルを取得（フォルダ構造が正式なソース）
+        drive_files = invoice_fetcher.get_drive_files_for_period(period_code)
+        card_file_ids = drive_files["card"]
+        bank_file_ids = drive_files["bank"]
 
         result = _copy_to_accountant_folders(
             invoice_fetcher.drive,
