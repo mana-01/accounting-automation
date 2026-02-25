@@ -238,6 +238,13 @@ class TestParseInvoiceFilename:
         assert result["vendor"] == "Google_Cloud"
         assert result["amount"] == 50000
 
+    def test_japanese_vendor_filename(self):
+        """日本語ベンダー名と全角スペースを含むファイル名"""
+        result = parse_invoice_filename("20260225_テスト　テスト_8250.pdf")
+        assert result["date"] == "2026-02-25"
+        assert result["vendor"] == "テスト　テスト"
+        assert result["amount"] == 8250
+
     def test_non_standard_filename(self):
         result = parse_invoice_filename("invoice.pdf")
         assert result["date"] is None
