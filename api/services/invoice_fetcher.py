@@ -1122,6 +1122,22 @@ class InvoiceFetcher:
         ).execute()
         return results.get("files", [])
 
+    def _list_files_in_folder(self, folder_id: str) -> list[dict]:
+        """フォルダ内の全ファイル一覧を返す（フォルダ自体は除外）"""
+        query = (
+            f"'{folder_id}' in parents and "
+            f"mimeType!='application/vnd.google-apps.folder' and "
+            f"trashed=false"
+        )
+        results = self.drive.files().list(
+            q=query, spaces="drive",
+            fields="files(id, name, webViewLink)",
+            orderBy="name",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        return results.get("files", [])
+
     def _download_pdf_from_drive(self, file_id: str) -> bytes:
         """DriveからPDFファイルのバイナリデータをダウンロードする"""
         request = self.drive.files().get_media(fileId=file_id, supportsAllDrives=True)
@@ -1244,9 +1260,9 @@ class InvoiceFetcher:
                 if not sub_folder_id:
                     continue
 
-                pdf_files = self._list_pdfs_in_folder(sub_folder_id)
-                for pdf_file in pdf_files:
-                    file_id = pdf_file.get("id")
+                files = self._list_files_in_folder(sub_folder_id)
+                for f in files:
+                    file_id = f.get("id")
                     if file_id:
                         if invoice_type == "bank":
                             bank_file_ids.append(file_id)
