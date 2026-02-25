@@ -1557,22 +1557,21 @@ def handle_share(ack, respond, body, client):
 
         # Driveフォルダから直接ファイルを取得（フォルダ構造が正式なソース）
         drive_files = invoice_fetcher.get_drive_files_for_period(text)
-        card_file_ids = drive_files["card"]
-        bank_file_ids = drive_files["bank"]
+        card_folders = drive_files["card"]
+        bank_folders = drive_files["bank"]
 
-        if not card_file_ids and not bank_file_ids:
+        if not card_folders and not bank_folders:
             client.chat_postMessage(
                 channel=user_id,
                 text=f"⚠️ {period_label} の請求書がありません。先に `/accounting-fetch-invoices {text}` で取得してください。"
             )
             return
 
-        # 共有フォルダにコピー
+        # フォルダごと税理士共有フォルダにコピー
         result = _copy_to_accountant_folders(
             invoice_fetcher.drive,
-            period_label,
-            card_file_ids,
-            bank_file_ids,
+            card_folders,
+            bank_folders,
             accountant_card_folder_id,
             accountant_bank_folder_id
         )
@@ -1581,15 +1580,19 @@ def handle_share(ack, respond, body, client):
         result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
 
         if result["card_count"] > 0:
+            folder_links = " ".join(
+                f"<{url}|フォルダを開く>" for url in result["card_folder_urls"]
+            )
             result_lines.append(
-                f"• 💳 クレジットカード: {result['card_count']}件 "
-                f"<{result['card_folder_url']}|フォルダを開く>"
+                f"• 💳 クレジットカード: {result['card_count']}件 {folder_links}"
             )
 
         if result["bank_count"] > 0:
+            folder_links = " ".join(
+                f"<{url}|フォルダを開く>" for url in result["bank_folder_urls"]
+            )
             result_lines.append(
-                f"• 🏦 銀行: {result['bank_count']}件 "
-                f"<{result['bank_folder_url']}|フォルダを開く>"
+                f"• 🏦 銀行: {result['bank_count']}件 {folder_links}"
             )
 
         if result["card_count"] == 0 and result["bank_count"] == 0:
@@ -1643,14 +1646,13 @@ def handle_share_with_accountant(ack, body, client, action):
 
         # Driveフォルダから直接ファイルを取得（フォルダ構造が正式なソース）
         drive_files = invoice_fetcher.get_drive_files_for_period(period_code)
-        card_file_ids = drive_files["card"]
-        bank_file_ids = drive_files["bank"]
+        card_folders = drive_files["card"]
+        bank_folders = drive_files["bank"]
 
         result = _copy_to_accountant_folders(
             invoice_fetcher.drive,
-            period_label,
-            card_file_ids,
-            bank_file_ids,
+            card_folders,
+            bank_folders,
             accountant_card_folder_id,
             accountant_bank_folder_id
         )
@@ -1658,15 +1660,19 @@ def handle_share_with_accountant(ack, body, client, action):
         result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
 
         if result["card_count"] > 0:
+            folder_links = " ".join(
+                f"<{url}|フォルダを開く>" for url in result["card_folder_urls"]
+            )
             result_lines.append(
-                f"• 💳 クレジットカード: {result['card_count']}件 "
-                f"<{result['card_folder_url']}|フォルダを開く>"
+                f"• 💳 クレジットカード: {result['card_count']}件 {folder_links}"
             )
 
         if result["bank_count"] > 0:
+            folder_links = " ".join(
+                f"<{url}|フォルダを開く>" for url in result["bank_folder_urls"]
+            )
             result_lines.append(
-                f"• 🏦 銀行: {result['bank_count']}件 "
-                f"<{result['bank_folder_url']}|フォルダを開く>"
+                f"• 🏦 銀行: {result['bank_count']}件 {folder_links}"
             )
 
         if result["card_count"] == 0 and result["bank_count"] == 0:
@@ -1719,16 +1725,18 @@ def _extract_drive_file_id(drive_url: str) -> str:
 
 def _copy_to_accountant_folders(
     drive_service,
-    period_label: str,
-    card_file_ids: list,
-    bank_file_ids: list,
+    card_folders: list,
+    bank_folders: list,
     accountant_card_folder_id: str,
     accountant_bank_folder_id: str
 ) -> dict:
-    """税理士共有フォルダに月別ファイルをコピー"""
+    """
+    税理士共有フォルダにフォルダ構造ごとコピーする。
+    card_folders / bank_folders: [{"name": "202509_クレジット", "file_ids": [...]}]
+    """
     result = {
-        "card_folder_url": "",
-        "bank_folder_url": "",
+        "card_folder_urls": [],
+        "bank_folder_urls": [],
         "card_count": 0,
         "bank_count": 0,
     }
@@ -1760,37 +1768,49 @@ def _copy_to_accountant_folders(
         ).execute()
         return folder["id"]
 
-    # クレジットカードファイルをコピー
-    if card_file_ids and accountant_card_folder_id:
-        card_subfolder_id = get_or_create_subfolder(accountant_card_folder_id, period_label)
-        for file_id in card_file_ids:
+    # クレジットカードフォルダをコピー
+    for folder_info in card_folders:
+        if not accountant_card_folder_id:
+            break
+        folder_name = folder_info["name"]
+        file_ids = folder_info["file_ids"]
+        subfolder_id = get_or_create_subfolder(accountant_card_folder_id, folder_name)
+        for file_id in file_ids:
             try:
                 drive_service.files().copy(
                     fileId=file_id,
-                    body={"parents": [card_subfolder_id]},
+                    body={"parents": [subfolder_id]},
                     fields="id",
                     supportsAllDrives=True
                 ).execute()
                 result["card_count"] += 1
             except Exception as e:
                 print(f"Failed to copy card file {file_id}: {e}")
-        result["card_folder_url"] = f"https://drive.google.com/drive/folders/{card_subfolder_id}"
+        result["card_folder_urls"].append(
+            f"https://drive.google.com/drive/folders/{subfolder_id}"
+        )
 
-    # 銀行ファイルをコピー
-    if bank_file_ids and accountant_bank_folder_id:
-        bank_subfolder_id = get_or_create_subfolder(accountant_bank_folder_id, period_label)
-        for file_id in bank_file_ids:
+    # 銀行フォルダをコピー
+    for folder_info in bank_folders:
+        if not accountant_bank_folder_id:
+            break
+        folder_name = folder_info["name"]
+        file_ids = folder_info["file_ids"]
+        subfolder_id = get_or_create_subfolder(accountant_bank_folder_id, folder_name)
+        for file_id in file_ids:
             try:
                 drive_service.files().copy(
                     fileId=file_id,
-                    body={"parents": [bank_subfolder_id]},
+                    body={"parents": [subfolder_id]},
                     fields="id",
                     supportsAllDrives=True
                 ).execute()
                 result["bank_count"] += 1
             except Exception as e:
                 print(f"Failed to copy bank file {file_id}: {e}")
-        result["bank_folder_url"] = f"https://drive.google.com/drive/folders/{bank_subfolder_id}"
+        result["bank_folder_urls"].append(
+            f"https://drive.google.com/drive/folders/{subfolder_id}"
+        )
 
     return result
 
