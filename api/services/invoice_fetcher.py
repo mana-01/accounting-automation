@@ -155,6 +155,18 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
             "summary": data.get("summary"),
             "extraction_method": "gemini",
         }
+
+        # Geminiで金額が取れなかった場合、regexフォールバックで補完
+        if result["amount"] is None:
+            try:
+                regex_result = _extract_amount_from_pdf_regex(pdf_data)
+                if regex_result.get("amount") is not None:
+                    result["amount"] = regex_result["amount"]
+                    result["extraction_method"] = "gemini+regex"
+                    print(f"Gemini amount was null, regex fallback found: {result['amount']}")
+            except Exception as regex_err:
+                print(f"Regex fallback also failed: {regex_err}")
+
         result["confidence"] = _calculate_extraction_confidence(result, method="gemini")
         return result
 
@@ -187,10 +199,10 @@ def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
             return result
 
         patterns = [
-            r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*[¥￥$]?\s*([\d,]+)',
-            r'合計[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            r'[¥￥]\s*([\d,]{5,})',
+            r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
+            r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*(?:JPY|[¥￥$])?\s*([\d,]+)',
+            r'合計[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
+            r'(?:JPY|[¥￥])\s*([\d,]{4,})',
             r'([\d,]{5,})\s*円',
         ]
 
