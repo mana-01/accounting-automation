@@ -1122,6 +1122,22 @@ class InvoiceFetcher:
         ).execute()
         return results.get("files", [])
 
+    def _list_files_in_folder(self, folder_id: str) -> list[dict]:
+        """フォルダ内の全ファイル一覧を返す（フォルダ自体は除外）"""
+        query = (
+            f"'{folder_id}' in parents and "
+            f"mimeType!='application/vnd.google-apps.folder' and "
+            f"trashed=false"
+        )
+        results = self.drive.files().list(
+            q=query, spaces="drive",
+            fields="files(id, name, webViewLink)",
+            orderBy="name",
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True
+        ).execute()
+        return results.get("files", [])
+
     def _download_pdf_from_drive(self, file_id: str) -> bytes:
         """DriveからPDFファイルのバイナリデータをダウンロードする"""
         request = self.drive.files().get_media(fileId=file_id, supportsAllDrives=True)
@@ -1215,6 +1231,46 @@ class InvoiceFetcher:
                     })
 
         return transactions
+
+    def get_drive_files_for_period(self, period_code: str) -> dict:
+        """
+        指定期間のDriveフォルダから直接ファイルIDを取得する。
+        スプレッドシートを経由せず、Driveフォルダ構造から
+        クレジット/銀行振込に分類し、フォルダ名とファイルIDリストを返す。
+        """
+        periods = parse_period(period_code)
+        card_folders = []
+        bank_folders = []
+
+        for p in periods:
+            year = p["year"]
+            month = p["month"]
+            code = p["code"]
+            month_folder_name = f"{year}年{month}月"
+
+            month_folder_id = self._find_folder(month_folder_name, self.drive_folder_id)
+            if not month_folder_id:
+                continue
+
+            for invoice_type in ["credit", "bank"]:
+                type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
+                sub_folder_name = f"{code}_{type_name}"
+
+                sub_folder_id = self._find_folder(sub_folder_name, month_folder_id)
+                if not sub_folder_id:
+                    continue
+
+                files = self._list_files_in_folder(sub_folder_id)
+                file_ids = [f["id"] for f in files if f.get("id")]
+
+                if file_ids:
+                    entry = {"name": sub_folder_name, "file_ids": file_ids}
+                    if invoice_type == "bank":
+                        bank_folders.append(entry)
+                    else:
+                        card_folders.append(entry)
+
+        return {"card": card_folders, "bank": bank_folders}
 
     def get_invoices_for_period(self, period_code: str) -> list[dict]:
         """指定期間の請求書一覧を取得（日付ベースでフィルタリング）"""
