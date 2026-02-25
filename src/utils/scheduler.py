@@ -1,7 +1,7 @@
 """Scheduler for periodic tasks like reminders."""
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from slack_sdk import WebClient
@@ -19,11 +19,10 @@ class Scheduler:
 
     def start(self):
         """スケジューラーを開始"""
-        # 月初の月曜日にリマインドを送信
-        # 毎週月曜日の朝9時にチェックし、その月の最初の月曜日なら通知
+        # 毎月5日の15時にリマインドを送信
         self.scheduler.add_job(
-            self._check_and_send_monthly_reminder,
-            CronTrigger(day_of_week="mon", hour=9, minute=0),
+            self._send_monthly_reminder,
+            CronTrigger(day=5, hour=15, minute=0),
             id="monthly_reminder",
             name="Monthly accounting reminder"
         )
@@ -36,12 +35,20 @@ class Scheduler:
             name="Daily invoice check"
         )
 
-        # 毎月3日の朝9時にハロートランク請求書を自動生成
+        # 毎月1日の朝9時にハロートランク請求書を自動生成（前月分）
         self.scheduler.add_job(
             self._generate_hellotrunk_invoice,
-            CronTrigger(day=3, hour=9, minute=0),
+            CronTrigger(day=1, hour=9, minute=0),
             id="hellotrunk_invoice",
             name="Monthly HelloTrunk invoice generation"
+        )
+
+        # 毎月1日の朝9時にメールから請求書PDFを自動取得（前月分）
+        self.scheduler.add_job(
+            self._fetch_email_invoices,
+            CronTrigger(day=1, hour=9, minute=30),
+            id="email_invoice_fetch",
+            name="Monthly email invoice fetch"
         )
 
         self.scheduler.start()
@@ -52,46 +59,59 @@ class Scheduler:
         self.scheduler.shutdown()
         print("Scheduler stopped")
 
-    def _check_and_send_monthly_reminder(self):
-        """月初の月曜日かチェックしてリマインドを送信"""
-        today = datetime.now()
-
-        # その月の最初の月曜日かチェック
-        first_day = today.replace(day=1)
-        days_until_monday = (7 - first_day.weekday()) % 7
-        if first_day.weekday() == 0:  # 1日が月曜日の場合
-            first_monday = first_day
-        else:
-            first_monday = first_day + timedelta(days=days_until_monday)
-
-        if today.date() == first_monday.date():
-            self._send_monthly_reminder()
-
     def _send_monthly_reminder(self):
         """月次リマインドを送信"""
         try:
             period = spreadsheet_service.get_current_period()
-            subscriptions = spreadsheet_service.get_subscriptions(active_only=True)
 
-            # 今月の予定支出を計算
-            monthly_total = sum(
-                s.amount for s in subscriptions
-                if s.billing_cycle.value == "monthly"
-            )
+            # ②手動取得項目と③固定スキャンをシートから取得
+            manual_items = spreadsheet_service.get_reminder_items(active_only=True, category="manual")
+            fixed_scan_items = spreadsheet_service.get_reminder_items(active_only=True, category="fixed_scan")
+
+            # ②手動取得項目のテキスト構築
+            manual_lines = []
+            for item in manual_items:
+                line = f"• {item.name}"
+                if item.notes:
+                    line += f"（{item.notes}）"
+                if item.url:
+                    line = f"• <{item.url}|{item.name}>"
+                    if item.notes:
+                        line += f"（{item.notes}）"
+                manual_lines.append(line)
+            manual_text = "\n".join(manual_lines) if manual_lines else "• _項目なし_"
+
+            # ③固定スキャンのテキスト構築
+            fixed_lines = []
+            for item in fixed_scan_items:
+                line = f"• {item.name}"
+                if item.notes:
+                    line += f"（{item.notes}）"
+                fixed_lines.append(line)
+            fixed_text = "\n".join(fixed_lines) if fixed_lines else "• _項目なし_"
 
             blocks = [
                 {
                     "type": "header",
-                    "text": {"type": "plain_text", "text": f"📅 {period} 経理作業リマインド"}
+                    "text": {"type": "plain_text", "text": f"\U0001f4c5 {period} \u7d4c\u7406\u4f5c\u696d\u306f\u3058\u3081\u308b\u3088\uff01\U0001f31e"}
                 },
                 {
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
+                        "text": "今月の経理作業を開始しましょう！\nまず以下の準備をお願いします。"
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
                         "text": (
-                            f"今月の経理作業を開始しましょう！\n\n"
-                            f"*📋 登録サブスク:* {len(subscriptions)}件\n"
-                            f"*💰 予定支出:* ¥{monthly_total:,.0f}\n"
+                            "*① 参照元データ取得*\n"
+                            "それぞれの明細を取得してきてください\n"
+                            "• <https://www.saisoncard.co.jp/|クレジットカード（セゾンカード）>\n"
+                            "• <https://sso.gmo-aozora.com/corp/b2c/login|銀行（GMOあおぞらネット銀行）>"
                         )
                     }
                 },
@@ -99,14 +119,39 @@ class Scheduler:
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
+                        "text": f"*② 手動取得項目*\n{manual_text}"
+                    }
+                },
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": f"*③ 固定スキャン*\n{fixed_text}"
+                    }
+                },
+                {"type": "divider"},
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
                         "text": (
-                            "*やることリスト:*\n"
-                            "1. カード明細CSVをダウンロードしてアップロード\n"
-                            "2. 銀行明細CSVをダウンロードしてアップロード\n"
-                            "3. 不足請求書を準備\n"
-                            "4. 照会結果を確認"
+                            "*流れ*\n"
+                            "☑︎ CSVを2つアップロード\n"
+                            "☑︎ `/accounting-reconcile` で足りていないものを確認\n"
+                            "☑︎ 不足分をSlackにアップロード\n"
+                            "☑︎ `/accounting-reconcile` で再確認\n"
+                            "☑︎ すべて揃ったら `/accounting-share` でエナリさんに共有"
                         )
                     }
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {
+                            "type": "mrkdwn",
+                            "text": "②③の項目は `/accounting-subscriptions` で編集できます"
+                        }
+                    ]
                 },
                 {
                     "type": "actions",
@@ -122,7 +167,7 @@ class Scheduler:
 
             self.slack_client.chat_postMessage(
                 channel=self.notification_channel,
-                text=f"📅 {period} 経理作業リマインド",
+                text=f"\U0001f4c5 {period} \u7d4c\u7406\u4f5c\u696d\u306f\u3058\u3081\u308b\u3088\uff01\U0001f31e",
                 blocks=blocks
             )
 
@@ -141,7 +186,7 @@ class Scheduler:
             print(f"Error in daily invoice check: {e}")
 
     def _generate_hellotrunk_invoice(self):
-        """ハロートランク請求書を自動生成してDriveにアップロード（毎月3日実行）"""
+        """ハロートランク請求書を自動生成してDriveにアップロード（毎月1日実行・前月分）"""
         try:
             from api.services.hellotrunk_invoice import generate_and_upload
 
@@ -170,6 +215,58 @@ class Scheduler:
                 self.slack_client.chat_postMessage(
                     channel=self.notification_channel,
                     text=f"ハロートランク請求書の自動生成に失敗しました: {e}",
+                )
+            except Exception:
+                pass
+
+    def _fetch_email_invoices(self):
+        """メールから請求書PDFを自動取得してDriveに保存（毎月1日実行・前月分）"""
+        try:
+            from api.services.invoice_fetcher import invoice_fetcher
+
+            # 前月の期間コードを算出
+            today = datetime.now()
+            if today.month == 1:
+                target_year = today.year - 1
+                target_month = 12
+            else:
+                target_year = today.year
+                target_month = today.month - 1
+            period_code = f"{target_year}{target_month:02d}"
+            period = f"{target_year}年{target_month}月"
+
+            results = invoice_fetcher.fetch_invoices_by_period(period_code)
+
+            saved = results.get("saved", 0)
+            registered = results.get("registered", 0)
+            skipped = results.get("skipped", 0)
+            errors = results.get("errors", []) + results.get("register_errors", [])
+
+            if saved > 0 or errors:
+                summary_parts = [
+                    f"*メール請求書の自動取得が完了しました*",
+                    f"対象月: {period}",
+                    f"• Drive保存: {saved}件",
+                    f"• シート登録: {registered}件",
+                ]
+                if skipped > 0:
+                    summary_parts.append(f"• スキップ（重複）: {skipped}件")
+                if errors:
+                    summary_parts.append(f"• エラー: {len(errors)}件")
+
+                self.slack_client.chat_postMessage(
+                    channel=self.notification_channel,
+                    text="\n".join(summary_parts),
+                )
+            else:
+                print(f"[email_invoice_fetch] {period} - no new invoices found")
+
+        except Exception as e:
+            print(f"Error fetching email invoices: {e}")
+            try:
+                self.slack_client.chat_postMessage(
+                    channel=self.notification_channel,
+                    text=f"メール請求書の自動取得に失敗しました: {e}",
                 )
             except Exception:
                 pass
