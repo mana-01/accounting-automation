@@ -149,7 +149,7 @@ class Scheduler:
                     "elements": [
                         {
                             "type": "mrkdwn",
-                            "text": "②③の項目は `/accounting-reminder-items` で編集できます"
+                            "text": "②③の項目は `/accounting-subscriptions` で編集できます"
                         }
                     ]
                 },
