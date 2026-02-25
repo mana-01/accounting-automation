@@ -981,30 +981,14 @@ class InvoiceFetcher:
                                 filename_analysis = analyze_original_filename(original_filename)
 
                                 if file_naming == "original":
-                                    # Original: 元の添付ファイル名をそのまま使用
+                                    # Original: 元の添付ファイル名をそのまま使用、Geminiは呼ばない
                                     filename = original_filename
-
-                                    # ファイル名から情報を抽出（優先データソース）
                                     fn_parsed = parse_invoice_filename(original_filename)
                                     inv_date = fn_parsed.get("date") or email_date
                                     inv_vendor = fn_parsed.get("vendor") or rule["name"]
                                     inv_amount = fn_parsed.get("amount")
-
-                                    # Gemini解析はファイル名から取得できない情報の補完のみに使用
                                     pdf_info = {"amount": inv_amount, "vendor": inv_vendor, "date": inv_date, "summary": None,
-                                                "extraction_method": "filename", "confidence": {"score": 0, "level": "low", "details": []}}
-                                    try:
-                                        gemini_info = extract_invoice_data_with_gemini(att["data"])
-                                        pdf_info = gemini_info
-                                        # ファイル名に情報がない項目のみGemini結果で補完
-                                        if not fn_parsed.get("date"):
-                                            inv_date = gemini_info.get("date") or email_date
-                                        if not fn_parsed.get("vendor"):
-                                            inv_vendor = gemini_info.get("vendor") or rule["name"]
-                                        if fn_parsed.get("amount") is None:
-                                            inv_amount = gemini_info.get("amount")
-                                    except Exception as gemini_err:
-                                        print(f"Gemini extraction failed (original mode): {gemini_err}")
+                                                "extraction_method": "filename", "confidence": {"score": 0, "level": "n/a", "details": ["ファイル名から抽出"]}}
                                 else:
                                     # Rename: Gemini解析して命名ルールでファイル名を生成
                                     try:
@@ -1144,30 +1128,14 @@ class InvoiceFetcher:
                                     filename_analysis = analyze_original_filename(original_filename)
 
                                     if file_naming == "original":
-                                        # Original: 元の添付ファイル名をそのまま使用
+                                        # Original: 元の添付ファイル名をそのまま使用、Geminiは呼ばない
                                         filename = original_filename
-
-                                        # ファイル名から情報を抽出（優先データソース）
                                         fn_parsed = parse_invoice_filename(original_filename)
                                         inv_date = fn_parsed.get("date") or email_date
                                         inv_vendor = fn_parsed.get("vendor") or rule["name"]
                                         inv_amount = fn_parsed.get("amount")
-
-                                        # Gemini解析はファイル名から取得できない情報の補完のみに使用
                                         pdf_info = {"amount": inv_amount, "vendor": inv_vendor, "date": inv_date, "summary": None,
-                                                    "extraction_method": "filename", "confidence": {"score": 0, "level": "low", "details": []}}
-                                        try:
-                                            gemini_info = extract_invoice_data_with_gemini(att["data"])
-                                            pdf_info = gemini_info
-                                            # ファイル名に情報がない項目のみGemini結果で補完
-                                            if not fn_parsed.get("date"):
-                                                inv_date = gemini_info.get("date") or email_date
-                                            if not fn_parsed.get("vendor"):
-                                                inv_vendor = gemini_info.get("vendor") or rule["name"]
-                                            if fn_parsed.get("amount") is None:
-                                                inv_amount = gemini_info.get("amount")
-                                        except Exception as gemini_err:
-                                            print(f"Gemini extraction failed (original mode): {gemini_err}")
+                                                    "extraction_method": "filename", "confidence": {"score": 0, "level": "n/a", "details": ["ファイル名から抽出"]}}
                                     else:
                                         # Rename: Gemini解析して命名ルールでファイル名を生成
                                         try:
