@@ -490,14 +490,15 @@ class InvoiceFetcher:
     def get_subscriptions(self) -> list[dict]:
         """Spreadsheetからメール取得ルールを読み込む（category=email のみ）
 
-        subscriptions シートのカラム:
+        subscriptions シートのカラム (10列, A〜J):
           A:name, B:category, C:sender_email, D:subject_pattern,
-          E:fetch_type, F:url, G:notes, H:link_selector, I:is_active
+          E:fetch_type, F:url, G:notes, H:link_selector,
+          I:file_naming, J:is_active
         """
         try:
             result = self.sheets.spreadsheets().values().get(
                 spreadsheetId=self.spreadsheet_id,
-                range="subscriptions!A2:I100"
+                range="subscriptions!A2:J100"
             ).execute()
 
             rows = result.get("values", [])
@@ -511,8 +512,8 @@ class InvoiceFetcher:
                 if category != "email":
                     continue
 
-                # is_active チェック (I列, index 8)
-                is_active = row[8].lower() == "true" if len(row) > 8 and row[8] else True
+                # is_active チェック (J列, index 9)
+                is_active = row[9].lower() == "true" if len(row) > 9 and row[9] else True
                 if not is_active:
                     continue
 
@@ -522,6 +523,7 @@ class InvoiceFetcher:
                     "subject_pattern": row[3] if len(row) > 3 else "",    # D: subject_pattern
                     "fetch_type": row[4] if len(row) > 4 else "attachment",  # E: fetch_type
                     "link_pattern": row[7] if len(row) > 7 else "",       # H: link_selector
+                    "file_naming": row[8] if len(row) > 8 and row[8] in ("rename", "original") else "rename",  # I: file_naming
                 })
             return rules
         except Exception as e:
