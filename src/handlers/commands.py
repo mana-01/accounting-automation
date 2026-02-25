@@ -1,5 +1,6 @@
 """Slack slash command handlers."""
 
+import os
 from slack_bolt import App
 from datetime import datetime
 
@@ -164,7 +165,8 @@ def register_commands(app: App):
                             "• `/accounting-add-subscription` - 新規サブスクを登録\n"
                             "• `/accounting-fetch-invoices` - メールから請求書を取得\n"
                             "• `/accounting-invoices [期間]` - 請求書一覧を表示\n"
-                            "• `/accounting-share [期間]` - 税理士さんに請求書を共有"
+                            "• `/accounting-share [期間]` - 税理士さんに請求書を共有\n"
+                            "• `/accounting-settings` - 設定とリンクを表示"
                         )
                     }
                 },
@@ -181,6 +183,67 @@ def register_commands(app: App):
                 }
             ]
         })
+
+    @app.command("/accounting-settings")
+    def handle_settings(ack, respond):
+        """設定情報を表示"""
+        ack()
+
+        spreadsheet_id = os.getenv("GOOGLE_SPREADSHEET_ID", "")
+        drive_folder_id = os.getenv("GOOGLE_DRIVE_FOLDER_ID", "")
+        notification_channel = os.getenv("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+
+        blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": "⚙️ 設定"}
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*現在の設定:*\n"
+                        f"• 通知チャンネル: `{notification_channel}`\n"
+                        f"• リマインド: 毎月5日 15:00\n"
+                        f"• メール請求書自動取得: 毎月1日 09:30\n"
+                        f"• ハロートランク請求書自動生成: 毎月1日 09:00"
+                    )
+                }
+            },
+        ]
+
+        # スプレッドシートへのリンク
+        links = []
+        if spreadsheet_id:
+            links.append(
+                f"• <https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit|📊 スプレッドシートを開く>"
+            )
+        if drive_folder_id:
+            links.append(
+                f"• <https://drive.google.com/drive/folders/{drive_folder_id}|📁 請求書フォルダを開く>"
+            )
+
+        if links:
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "*リンク:*\n" + "\n".join(links)
+                }
+            })
+
+        blocks.append({
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "設定の変更は環境変数またはスプレッドシートの settings シートで行えます"
+                }
+            ]
+        })
+
+        respond({"response_type": "ephemeral", "blocks": blocks})
 
     @app.command("/accounting-status")
     def handle_status(ack, respond):
