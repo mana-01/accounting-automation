@@ -7,6 +7,7 @@ from ..models import PaymentMethod
 from ..services.spreadsheet import spreadsheet_service
 from ..services.reconciliation import reconciliation_service
 from ..services.drive import drive_service
+from ..services.chatwork import chatwork_service
 
 
 def register_commands(app: App):
@@ -416,6 +417,22 @@ def register_commands(app: App):
 
             if share_result["card_count"] == 0 and share_result["bank_count"] == 0:
                 result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
+
+            # Chatworkで税理士さんに通知
+            chatwork_notified = False
+            try:
+                cw_result = chatwork_service.notify_accounting_share_complete(
+                    period=period,
+                    card_count=share_result["card_count"],
+                    bank_count=share_result["bank_count"],
+                    card_folder_url=share_result.get("card_folder_url", ""),
+                    bank_folder_url=share_result.get("bank_folder_url", ""),
+                )
+                if cw_result is not None:
+                    chatwork_notified = True
+                    result_lines.append("\n💬 Chatworkで税理士さんに通知しました。")
+            except Exception as cw_err:
+                result_lines.append(f"\n⚠️ Chatwork通知に失敗しました: {cw_err}")
 
             respond({
                 "response_type": "in_channel",
