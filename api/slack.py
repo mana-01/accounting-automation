@@ -44,7 +44,7 @@ def handle_help(ack, respond):
 • `/accounting-reconcile [期間]` - CSV照会を実行
 • `/accounting-share [期間]` - 税理士さんに請求書を共有
 • `/accounting-generate-hellotrunk [期間]` - ハロートランク請求書を手動生成
-• `/accounting-diagnose` - Google Drive アクセス診断
+
 
 *期間指定の例:*
 • `202602` - 2026年2月分のみ
@@ -64,97 +64,6 @@ def handle_help(ack, respond):
 └── 📁 202602_銀行振込/"""
     })
 
-
-@slack_app.command("/accounting-diagnose")
-def handle_diagnose(ack, respond):
-    """Google Drive アクセス診断"""
-    ack()
-    try:
-        from api.services.invoice_fetcher import get_google_credentials
-        from googleapiclient.discovery import build
-
-        lines = ["*🔍 Google Drive アクセス診断*\n"]
-
-        # 1. サービスアカウント情報
-        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
-        if creds_json:
-            creds_dict = json.loads(creds_json)
-            client_email = creds_dict.get("client_email", "(不明)")
-            client_id = creds_dict.get("client_id", "(不明)")
-            lines.append(f"*1. サービスアカウント:*")
-            lines.append(f"  `client_email`: `{client_email}`")
-            lines.append(f"  `client_id`: `{client_id}`")
-        else:
-            lines.append("*1.* ❌ `GOOGLE_CREDENTIALS_JSON` 未設定")
-
-        # 2. GOOGLE_DELEGATE_EMAIL
-        delegate_email = os.environ.get("GOOGLE_DELEGATE_EMAIL", "")
-        lines.append(f"\n*2. GOOGLE_DELEGATE_EMAIL:*")
-        if delegate_email:
-            lines.append(f"  ✅ `{delegate_email}`")
-        else:
-            lines.append(f"  ⚠️ 未設定")
-
-        # 3. フォルダ ID
-        drive_folder = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
-        card_folder = os.environ.get("ACCOUNTANT_CARD_FOLDER_ID", "")
-        bank_folder = os.environ.get("ACCOUNTANT_BANK_FOLDER_ID", "")
-        lines.append(f"\n*3. フォルダ ID:*")
-        lines.append(f"  `GOOGLE_DRIVE_FOLDER_ID`: `{drive_folder or '(未設定)'}`")
-        lines.append(f"  `ACCOUNTANT_CARD_FOLDER_ID`: `{card_folder or '(未設定)'}`")
-        lines.append(f"  `ACCOUNTANT_BANK_FOLDER_ID`: `{bank_folder or '(未設定)'}`")
-
-        # 4. アクセステスト
-        lines.append(f"\n*4. アクセステスト:*")
-        scopes = ["https://www.googleapis.com/auth/drive"]
-        credentials = get_google_credentials(scopes)
-        service = build("drive", "v3", credentials=credentials)
-
-        test_folders = [
-            ("メインフォルダ", drive_folder),
-            ("税理士カードフォルダ", card_folder),
-            ("税理士銀行フォルダ", bank_folder),
-        ]
-
-        for label, folder_id in test_folders:
-            if not folder_id:
-                lines.append(f"  {label}: ⏭️ ID 未設定")
-                continue
-            try:
-                result = service.files().get(
-                    fileId=folder_id,
-                    fields="id, name",
-                    supportsAllDrives=True
-                ).execute()
-                name = result.get("name", "?")
-                lines.append(f"  {label}: ✅ `{name}`")
-            except Exception as e:
-                err = str(e)
-                if "404" in err:
-                    lines.append(f"  {label}: ❌ 404 Not Found")
-                elif "403" in err:
-                    lines.append(f"  {label}: ❌ 403 権限不足")
-                else:
-                    lines.append(f"  {label}: ❌ `{err[:100]}`")
-
-        # 5. ヒント
-        lines.append(f"\n*💡 税理士フォルダが ❌ の場合:*")
-        if delegate_email:
-            lines.append(f"  → ドメイン全体の委任が未設定の可能性あり")
-            lines.append(f"  → または `{client_email}` を共有ドライブのメンバーに追加")
-        else:
-            lines.append(f"  方法1: `{client_email}` を共有ドライブのメンバーに追加")
-            lines.append(f"  方法2: `GOOGLE_DELEGATE_EMAIL` を設定してドメイン委任を利用")
-
-        respond({
-            "response_type": "ephemeral",
-            "text": "\n".join(lines)
-        })
-    except Exception as e:
-        respond({
-            "response_type": "ephemeral",
-            "text": f"❌ 診断中にエラー: {str(e)}\n```{traceback.format_exc()[-500:]}```"
-        })
 
 
 @slack_app.command("/accounting-status")
@@ -1621,6 +1530,11 @@ def handle_share_with_accountant(ack, body, client, action):
         if result["card_count"] == 0 and result["bank_count"] == 0:
             result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
 
+        if result.get("errors"):
+            result_lines.append(f"\n⚠️ {len(result['errors'])}件のファイルコピーに失敗:")
+            for err in result["errors"][:5]:
+                result_lines.append(f"  • {err[:100]}")
+
         client.chat_update(
             channel=channel_id,
             ts=body["message"]["ts"],
@@ -1666,6 +1580,30 @@ def _extract_drive_file_id(drive_url: str) -> str:
     return ""
 
 
+def _validate_folder_access(drive_service, folder_id: str, label: str):
+    """フォルダへのアクセスを検証し、404の場合は分かりやすいエラーを投げる"""
+    try:
+        drive_service.files().get(
+            fileId=folder_id,
+            fields="id, name",
+            supportsAllDrives=True
+        ).execute()
+    except Exception as e:
+        err = str(e)
+        if "404" in err:
+            raise ValueError(
+                f"{label}フォルダ (ID: {folder_id}) にアクセスできません。"
+                f"\n→ フォルダが存在しないか、サービスアカウントに共有されていない可能性があります。"
+                f"\n→ Google Drive でフォルダを開き、サービスアカウントのメールアドレスに「編集者」権限を付与してください。"
+            )
+        elif "403" in err:
+            raise ValueError(
+                f"{label}フォルダ (ID: {folder_id}) への権限が不足しています。"
+                f"\n→ サービスアカウントに「編集者」権限が必要です。"
+            )
+        raise
+
+
 def _copy_to_accountant_folders(
     drive_service,
     period_label: str,
@@ -1680,7 +1618,14 @@ def _copy_to_accountant_folders(
         "bank_folder_url": "",
         "card_count": 0,
         "bank_count": 0,
+        "errors": [],
     }
+
+    # フォルダアクセスを事前検証
+    if card_file_ids and accountant_card_folder_id:
+        _validate_folder_access(drive_service, accountant_card_folder_id, "税理士カード")
+    if bank_file_ids and accountant_bank_folder_id:
+        _validate_folder_access(drive_service, accountant_bank_folder_id, "税理士銀行")
 
     def get_or_create_subfolder(parent_id: str, name: str) -> str:
         query = (
@@ -1722,7 +1667,9 @@ def _copy_to_accountant_folders(
                 ).execute()
                 result["card_count"] += 1
             except Exception as e:
+                error_msg = f"カードファイル {file_id}: {e}"
                 print(f"Failed to copy card file {file_id}: {e}")
+                result["errors"].append(error_msg)
         result["card_folder_url"] = f"https://drive.google.com/drive/folders/{card_subfolder_id}"
 
     # 銀行ファイルをコピー
@@ -1738,7 +1685,9 @@ def _copy_to_accountant_folders(
                 ).execute()
                 result["bank_count"] += 1
             except Exception as e:
+                error_msg = f"銀行ファイル {file_id}: {e}"
                 print(f"Failed to copy bank file {file_id}: {e}")
+                result["errors"].append(error_msg)
         result["bank_folder_url"] = f"https://drive.google.com/drive/folders/{bank_subfolder_id}"
 
     return result
