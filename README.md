@@ -67,6 +67,58 @@ Slack完結型の経理自動化システム。カード・銀行明細のCSVを
 4. Google Spreadsheet を作成し、サービスアカウントに編集権限を付与
 5. Google Drive フォルダを作成し、サービスアカウントに編集権限を付与
 
+### 3a. Domain-wide Delegation の設定 (Google Workspace 利用時)
+
+共有ドライブや他ユーザーのリソースにサービスアカウントからアクセスする場合、Domain-wide Delegation (ドメイン全体の委任) の設定が必要です。
+
+#### Step 1: Google Cloud Console でサービスアカウントの委任を有効化
+
+1. [Google Cloud Console](https://console.cloud.google.com/) → IAM と管理 → サービスアカウント
+2. 使用するサービスアカウントを選択
+3. 「詳細設定を表示」→「ドメイン全体の委任」→ 有効にする
+4. **クライアント ID** をメモ（Google Admin での登録に使用）
+
+#### Step 2: Google Admin で API スコープを登録
+
+1. [Google Admin](https://admin.google.com/) にワークスペース管理者でログイン
+2. **セキュリティ** → **アクセスとデータ管理** → **API の制御** → **ドメイン全体の委任** を開く
+3. 「新しく追加」をクリック
+4. 以下を入力:
+   - **クライアント ID**: Step 1 でメモしたサービスアカウントのクライアント ID
+   - **OAuth スコープ**: 以下の3つをカンマ区切りで入力
+
+```
+https://www.googleapis.com/auth/spreadsheets,https://www.googleapis.com/auth/drive,https://www.googleapis.com/auth/gmail.readonly
+```
+
+5. 「承認」をクリック
+
+> **既存の設定にスコープを追加する場合**: 既にクライアント ID が登録済みの場合は、該当行の「編集」をクリックし、OAuth スコープ欄に不足しているスコープを追加してください。例えば Drive と Gmail のみ登録済みの場合、`https://www.googleapis.com/auth/spreadsheets` を追加します。
+
+#### Step 3: 環境変数の設定
+
+`.env` に委任先ユーザーのメールアドレスを設定:
+
+```env
+GOOGLE_DELEGATE_EMAIL=your-workspace-user@your-domain.com
+```
+
+#### 各スコープの用途
+
+| スコープ | 用途 |
+|---------|------|
+| `https://www.googleapis.com/auth/spreadsheets` | サブスクリプション・請求書・照会履歴の読み書き |
+| `https://www.googleapis.com/auth/drive` | 請求書PDFの保存・月別フォルダ管理・税理士共有 |
+| `https://www.googleapis.com/auth/gmail.readonly` | メールからの請求書自動取得 |
+
+#### 設定の確認
+
+診断スクリプトで Domain-wide Delegation の設定状態を確認できます:
+
+```bash
+python scripts/check_drive_access.py
+```
+
 ### 4. インストール
 
 ```bash
