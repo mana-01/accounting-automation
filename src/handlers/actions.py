@@ -138,23 +138,34 @@ def register_actions(app: App):
             file_data = file_info["file"]
             file_name = file_data.get("name", "invoice.pdf")
 
-            # PDFをダウンロードしてGemini解析で請求日・金額を抽出
+            # 方法1: ファイル名が {日付}_{名前}_{金額}.pdf のルールに合致すればそのまま使用
+            # 方法2: ルールに合致しない場合のみGemini解析で請求日・金額を抽出
             extracted_date = datetime.now().strftime("%Y-%m-%d")
             extracted_amount = ""
-            download_url = file_data.get("url_private_download")
-            if download_url:
-                headers = {"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}"}
-                dl_response = requests.get(download_url, headers=headers)
-                if dl_response.status_code == 200:
-                    try:
-                        from api.services.invoice_fetcher import extract_invoice_data_with_gemini
-                        pdf_info = extract_invoice_data_with_gemini(dl_response.content)
-                        if pdf_info.get("date"):
-                            extracted_date = pdf_info["date"]
-                        if pdf_info.get("amount"):
-                            extracted_amount = str(pdf_info["amount"])
-                    except Exception as extract_err:
-                        logger.warning(f"PDF extraction failed, using defaults: {extract_err}")
+
+            from api.services.invoice_fetcher import parse_invoice_filename, extract_invoice_data_with_gemini
+            parsed = parse_invoice_filename(file_name)
+
+            if parsed.get("date") and parsed.get("amount"):
+                # ファイル名から日付・金額が取れた → Gemini不要
+                extracted_date = parsed["date"]
+                extracted_amount = str(parsed["amount"])
+                logger.info(f"Filename parse OK: date={extracted_date}, amount={extracted_amount}, vendor={parsed.get('vendor')}")
+            else:
+                # ファイル名がルールに合致しない → Gemini解析にフォールバック
+                download_url = file_data.get("url_private_download")
+                if download_url:
+                    headers = {"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}"}
+                    dl_response = requests.get(download_url, headers=headers)
+                    if dl_response.status_code == 200:
+                        try:
+                            pdf_info = extract_invoice_data_with_gemini(dl_response.content)
+                            if pdf_info.get("date"):
+                                extracted_date = pdf_info["date"]
+                            if pdf_info.get("amount"):
+                                extracted_amount = str(pdf_info["amount"])
+                        except Exception as extract_err:
+                            logger.warning(f"PDF extraction failed, using defaults: {extract_err}")
 
             # サブスク選択モーダルを表示
             subscriptions = spreadsheet_service.get_subscriptions(active_only=True)

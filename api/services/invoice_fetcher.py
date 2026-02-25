@@ -118,10 +118,12 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
         prompt = """この請求書PDFから以下の情報をJSON形式で抽出してください。
 必ず以下のJSON形式のみで回答してください。説明文は不要です。
 
-【重要: 金額の抽出ルール】
-- "amount" には必ず最終的な支払い総額（税込合計・ご請求金額・合計金額）を入れてください。
-- 「小計」「税抜金額」「消費税額」など途中の金額は絶対に使わないでください。
-- 複数の金額候補がある場合は、最終的な支払い合計額（最も大きい総額）を選んでください。
+【最重要: 金額の抽出ルール】
+- "amount" には「ご請求金額」「お支払い金額」「請求金額」「合計金額」「税込合計」など、最終的な支払い総額を入れてください。
+- ⚠️ 絶対に「小計」の金額を使わないでください。「小計」と「合計」が両方ある場合は必ず「合計」の方を使ってください。
+- 「小計」「税抜金額」「消費税額」「値引き前金額」など途中の計算金額は絶対に使わないでください。
+- 複数の金額候補がある場合は、最終的な支払い合計額を選んでください。
+- 例: 小計 10,000円 / 消費税 1,000円 / 合計 11,000円 → amount は 11000
 
 {
   "amount": 請求金額（税込の最終支払い総額、整数、円単位、不明ならnull）,
@@ -198,24 +200,52 @@ def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
             result["confidence"] = _calculate_extraction_confidence(result, method="regex")
             return result
 
-        patterns = [
+        # 小計に紐づく金額を事前に収集して除外リストを作成
+        subtotal_amounts = set()
+        subtotal_pattern = r'小計[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?'
+        for match in re.findall(subtotal_pattern, text):
+            try:
+                subtotal_amounts.add(int(match.replace(",", "")))
+            except ValueError:
+                pass
+
+        # 優先度順のパターン（上位パターンでマッチした金額を優先）
+        prioritized_patterns = [
             r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
             r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*(?:JPY|[¥￥$])?\s*([\d,]+)',
-            r'合計[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
+            r'(?<!小)計[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
+        ]
+        generic_patterns = [
             r'(?:JPY|[¥￥])\s*([\d,]{4,})',
             r'([\d,]{5,})\s*円',
         ]
 
-        amounts = []
-        for pattern in patterns:
+        # まず優先パターンで合計金額を探す
+        priority_amounts = []
+        for pattern in prioritized_patterns:
             matches = re.findall(pattern, text, re.IGNORECASE)
             for match in matches:
                 try:
-                    amount = int(match.replace(",", ""))
-                    if 100 <= amount <= 10000000:
-                        amounts.append(amount)
+                    amt = int(match.replace(",", ""))
+                    if 100 <= amt <= 10000000 and amt not in subtotal_amounts:
+                        priority_amounts.append(amt)
                 except ValueError:
                     continue
+
+        # 優先パターンで見つかればそちらを使用、なければ汎用パターンにフォールバック
+        if priority_amounts:
+            amounts = priority_amounts
+        else:
+            amounts = []
+            for pattern in generic_patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                for match in matches:
+                    try:
+                        amt = int(match.replace(",", ""))
+                        if 100 <= amt <= 10000000 and amt not in subtotal_amounts:
+                            amounts.append(amt)
+                    except ValueError:
+                        continue
 
         amount = None
         if amounts:
