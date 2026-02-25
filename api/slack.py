@@ -173,7 +173,7 @@ def handle_status(ack, respond):
 
         rules_result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="subscriptions!A2:I100"
+            range="subscriptions!A2:J100"
         ).execute()
         rules = rules_result.get("values", [])
 
@@ -579,11 +579,12 @@ def _list_subscriptions(ack, respond, body, client):
             })
             for item in email_items:
                 type_text = "PDF添付" if item["fetch_type"] == "attachment" else "リンク"
+                naming_text = "リネーム" if item.get("file_naming", "rename") == "rename" else "元ファイル名"
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{item['name']}*\n送信者: `{item['sender_email']}`\n件名: `{item['subject_pattern']}`\nタイプ: {type_text}"
+                        "text": f"*{item['name']}*\n送信者: `{item['sender_email']}`\n件名: `{item['subject_pattern']}`\nタイプ: {type_text} | ファイル名: {naming_text}"
                     },
                     "accessory": {
                         "type": "button",
@@ -679,10 +680,10 @@ def handle_delete_subscription_rule(ack, body, client):
     try:
         sheets, spreadsheet_id = _get_subscription_sheets()
 
-        # is_activeをfalseに更新（列I = 9番目）
+        # is_activeをfalseに更新（列J = 10番目）
         sheets.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range=f"subscriptions!I{row_num}",
+            range=f"subscriptions!J{row_num}",
             valueInputOption="RAW",
             body={"values": [["false"]]}
         ).execute()
@@ -1847,21 +1848,23 @@ def _get_subscription_sheets():
 def _read_subscriptions():
     """subscriptions シートからアクティブな項目を読み取る
 
-    カラム: A:name, B:category, C:sender_email, D:subject_pattern,
-            E:fetch_type, F:url, G:notes, H:link_selector, I:is_active
+    カラム (10列, A〜J):
+      A:name, B:category, C:sender_email, D:subject_pattern,
+      E:fetch_type, F:url, G:notes, H:link_selector,
+      I:file_naming, J:is_active
     """
     sheets, spreadsheet_id = _get_subscription_sheets()
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range="subscriptions!A2:I100"
+        range="subscriptions!A2:J100"
     ).execute()
     rows = result.get("values", [])
     items = []
     for i, row in enumerate(rows):
         if len(row) < 1 or not row[0]:
             continue
-        # 列I (index 8) = is_active
-        is_active = row[8].lower() == "true" if len(row) > 8 and row[8] else True
+        # 列J (index 9) = is_active
+        is_active = row[9].lower() == "true" if len(row) > 9 and row[9] else True
         if not is_active:
             continue
         items.append({
@@ -1873,6 +1876,7 @@ def _read_subscriptions():
             "fetch_type": row[4] if len(row) > 4 else "attachment",  # E
             "url": row[5] if len(row) > 5 else "",               # F
             "notes": row[6] if len(row) > 6 else "",             # G
+            "file_naming": row[8] if len(row) > 8 and row[8] in ("rename", "original") else "rename",  # I
         })
     return items
 
@@ -1945,6 +1949,23 @@ def _build_add_subscription_modal_view(selected_category="email"):
                     "options": [
                         {"text": {"type": "plain_text", "text": "添付PDF"}, "value": "attachment"},
                         {"text": {"type": "plain_text", "text": "リンク"}, "value": "link"},
+                    ]
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "file_naming_block",
+                "label": {"type": "plain_text", "text": "ファイル名"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "file_naming_select",
+                    "initial_option": {
+                        "text": {"type": "plain_text", "text": "リネーム（日付_請求元_金額.pdf）"},
+                        "value": "rename"
+                    },
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "リネーム（日付_請求元_金額.pdf）"}, "value": "rename"},
+                        {"text": {"type": "plain_text", "text": "元ファイル名のまま"}, "value": "original"},
                     ]
                 }
             },
@@ -2036,6 +2057,7 @@ def handle_add_subscription_submission(ack, body, client, view):
         sender_email = ""
         subject_pattern = ""
         fetch_type = "attachment"
+        file_naming = "rename"
         url = ""
         notes = ""
 
@@ -2043,6 +2065,7 @@ def handle_add_subscription_submission(ack, body, client, view):
             sender_email = values["sender_email_block"]["sender_email_input"]["value"]
             subject_pattern = values["subject_block"]["subject_input"]["value"]
             fetch_type = values["fetch_type_block"]["fetch_type_select"]["selected_option"]["value"]
+            file_naming = values["file_naming_block"]["file_naming_select"]["selected_option"]["value"]
         elif category == "manual":
             url = values.get("url_block", {}).get("url_input", {}).get("value") or ""
             notes = values.get("notes_block", {}).get("notes_input", {}).get("value") or ""
@@ -2051,12 +2074,12 @@ def handle_add_subscription_submission(ack, body, client, view):
 
         sheets, spreadsheet_id = _get_subscription_sheets()
         # 列順: name(A), category(B), sender_email(C), subject_pattern(D),
-        #       fetch_type(E), url(F), notes(G), link_selector(H), is_active(I)
+        #       fetch_type(E), url(F), notes(G), link_selector(H), file_naming(I), is_active(J)
         sheets.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
-            range="subscriptions!A:I",
+            range="subscriptions!A:J",
             valueInputOption="USER_ENTERED",
-            body={"values": [[name, category, sender_email, subject_pattern, fetch_type, url, notes, "", "true"]]}
+            body={"values": [[name, category, sender_email, subject_pattern, fetch_type, url, notes, "", file_naming, "true"]]}
         ).execute()
 
         user_id = body["user"]["id"]

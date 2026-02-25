@@ -115,9 +115,10 @@ class Subscription:
 class SubscriptionRule:
     """請求書取得ルール（メール自動取得 / 手動確認 / スキャン）
 
-    subscriptions シートのカラム対応:
+    subscriptions シートのカラム対応 (10列, A〜J):
       A: name, B: category, C: sender_email, D: subject_pattern,
-      E: fetch_type, F: url, G: notes, H: link_selector, I: is_active
+      E: fetch_type, F: url, G: notes, H: link_selector,
+      I: file_naming, J: is_active
     """
     name: str
     category: SubscriptionCategory = SubscriptionCategory.EMAIL
@@ -127,10 +128,11 @@ class SubscriptionRule:
     url: str = ""                   # 手動確認: 確認先URL
     notes: str = ""                 # 手動確認/スキャン: 備考
     link_selector: Optional[str] = None  # メール自動取得: CSSセレクタ
+    file_naming: str = "rename"     # メール自動取得: "rename" or "original"
     is_active: bool = True
 
     def to_row(self) -> list:
-        """subscriptions シートの1行に変換 (A-I)"""
+        """subscriptions シートの1行に変換 (A-J)"""
         return [
             self.name,                    # A: name
             self.category.value,          # B: category
@@ -140,12 +142,13 @@ class SubscriptionRule:
             self.url,                     # F: url
             self.notes,                   # G: notes
             self.link_selector or "",     # H: link_selector
-            str(self.is_active).lower(),  # I: is_active
+            self.file_naming,             # I: file_naming
+            str(self.is_active).lower(),  # J: is_active
         ]
 
     @classmethod
     def from_row(cls, row: list) -> "SubscriptionRule":
-        """subscriptions シートの行から生成 (A-I)"""
+        """subscriptions シートの行から生成 (A-J)"""
         return cls(
             name=row[0] if len(row) > 0 else "",              # A
             category=SubscriptionCategory(row[1]) if len(row) > 1 and row[1] else SubscriptionCategory.EMAIL,  # B
@@ -155,7 +158,8 @@ class SubscriptionRule:
             url=row[5] if len(row) > 5 else "",               # F
             notes=row[6] if len(row) > 6 else "",             # G
             link_selector=row[7] if len(row) > 7 and row[7] else None,  # H
-            is_active=row[8].lower() == "true" if len(row) > 8 and row[8] else True,  # I
+            file_naming=row[8] if len(row) > 8 and row[8] in ("rename", "original") else "rename",  # I
+            is_active=row[9].lower() == "true" if len(row) > 9 and row[9] else True,  # J
         )
 
 
@@ -288,11 +292,12 @@ SHEET_NAMES = {
 #   F: url             手動確認: 確認先URL
 #   G: notes           手動確認/スキャン: 備考
 #   H: link_selector   メール自動取得: リンク取得時CSSセレクタ
-#   I: is_active       有効フラグ true / false
+#   I: file_naming     メール自動取得: rename / original
+#   J: is_active       有効フラグ true / false
 SHEET_HEADERS = {
     "subscriptions": [
         "name", "category", "sender_email", "subject_pattern",
-        "fetch_type", "url", "notes", "link_selector", "is_active"
+        "fetch_type", "url", "notes", "link_selector", "file_naming", "is_active"
     ],
     "subscription_master": [
         "id", "name", "vendor", "amount", "currency", "billing_day",
