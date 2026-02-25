@@ -89,11 +89,13 @@ def handle_diagnose(ack, respond):
 
         # 2. GOOGLE_DELEGATE_EMAIL
         delegate_email = os.environ.get("GOOGLE_DELEGATE_EMAIL", "")
-        lines.append(f"\n*2. GOOGLE_DELEGATE_EMAIL:*")
+        gmail_emails = os.environ.get("GMAIL_USER_EMAILS", "") or os.environ.get("GMAIL_USER_EMAIL", "")
+        lines.append(f"\n*2. 委任設定:*")
         if delegate_email:
-            lines.append(f"  ✅ `{delegate_email}`")
+            lines.append(f"  `GOOGLE_DELEGATE_EMAIL`: ✅ `{delegate_email}`")
         else:
-            lines.append(f"  ⚠️ 未設定")
+            lines.append(f"  `GOOGLE_DELEGATE_EMAIL`: ⚠️ 未設定")
+        lines.append(f"  `GMAIL_USER_EMAIL(S)`: `{gmail_emails or '(未設定)'}`")
 
         # 3. フォルダ ID
         drive_folder = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
@@ -1621,6 +1623,11 @@ def handle_share_with_accountant(ack, body, client, action):
         if result["card_count"] == 0 and result["bank_count"] == 0:
             result_lines.append("⚠️ コピー対象のファイルがありませんでした。")
 
+        if result.get("errors"):
+            result_lines.append(f"\n⚠️ {len(result['errors'])}件のファイルコピーに失敗:")
+            for err in result["errors"][:5]:
+                result_lines.append(f"  • {err[:100]}")
+
         client.chat_update(
             channel=channel_id,
             ts=body["message"]["ts"],
@@ -1666,6 +1673,30 @@ def _extract_drive_file_id(drive_url: str) -> str:
     return ""
 
 
+def _validate_folder_access(drive_service, folder_id: str, label: str):
+    """フォルダへのアクセスを検証し、404の場合は分かりやすいエラーを投げる"""
+    try:
+        drive_service.files().get(
+            fileId=folder_id,
+            fields="id, name",
+            supportsAllDrives=True
+        ).execute()
+    except Exception as e:
+        err = str(e)
+        if "404" in err:
+            raise ValueError(
+                f"{label}フォルダ (ID: {folder_id}) にアクセスできません。"
+                f"\n→ フォルダが存在しないか、サービスアカウントに共有されていない可能性があります。"
+                f"\n→ Google Drive でフォルダを開き、サービスアカウントのメールアドレスに「編集者」権限を付与してください。"
+            )
+        elif "403" in err:
+            raise ValueError(
+                f"{label}フォルダ (ID: {folder_id}) への権限が不足しています。"
+                f"\n→ サービスアカウントに「編集者」権限が必要です。"
+            )
+        raise
+
+
 def _copy_to_accountant_folders(
     drive_service,
     period_label: str,
@@ -1680,7 +1711,14 @@ def _copy_to_accountant_folders(
         "bank_folder_url": "",
         "card_count": 0,
         "bank_count": 0,
+        "errors": [],
     }
+
+    # フォルダアクセスを事前検証
+    if card_file_ids and accountant_card_folder_id:
+        _validate_folder_access(drive_service, accountant_card_folder_id, "税理士カード")
+    if bank_file_ids and accountant_bank_folder_id:
+        _validate_folder_access(drive_service, accountant_bank_folder_id, "税理士銀行")
 
     def get_or_create_subfolder(parent_id: str, name: str) -> str:
         query = (
@@ -1722,7 +1760,9 @@ def _copy_to_accountant_folders(
                 ).execute()
                 result["card_count"] += 1
             except Exception as e:
+                error_msg = f"カードファイル {file_id}: {e}"
                 print(f"Failed to copy card file {file_id}: {e}")
+                result["errors"].append(error_msg)
         result["card_folder_url"] = f"https://drive.google.com/drive/folders/{card_subfolder_id}"
 
     # 銀行ファイルをコピー
@@ -1738,7 +1778,9 @@ def _copy_to_accountant_folders(
                 ).execute()
                 result["bank_count"] += 1
             except Exception as e:
+                error_msg = f"銀行ファイル {file_id}: {e}"
                 print(f"Failed to copy bank file {file_id}: {e}")
+                result["errors"].append(error_msg)
         result["bank_folder_url"] = f"https://drive.google.com/drive/folders/{bank_subfolder_id}"
 
     return result
