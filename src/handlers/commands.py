@@ -124,7 +124,7 @@ def _build_add_rule_modal(selected_category: str = "email") -> dict:
 
     return {
         "type": "modal",
-        "callback_id": "add_email_rule_modal",
+        "callback_id": "add_subscription_modal",
         "title": {"type": "plain_text", "text": "取得ルール登録"},
         "submit": {"type": "plain_text", "text": "登録"},
         "close": {"type": "plain_text", "text": "キャンセル"},
@@ -242,7 +242,7 @@ def register_commands(app: App):
         ack()
 
         try:
-            rules = spreadsheet_service.get_email_rules()
+            rules = spreadsheet_service.get_subscriptions()
 
             if not rules:
                 respond("登録されている取得ルールはありません。\n`/accounting-add-subscription` で追加できます。")
@@ -256,16 +256,16 @@ def register_commands(app: App):
             ]
 
             # カテゴリ別にグループ化
-            email_rules = [r for r in rules if r.category.value == "email"]
+            email_items = [r for r in rules if r.category.value == "email"]
             manual_rules = [r for r in rules if r.category.value == "manual"]
             scan_rules = [r for r in rules if r.category.value == "scan"]
 
-            if email_rules:
+            if email_items:
                 blocks.append({
                     "type": "section",
                     "text": {"type": "mrkdwn", "text": "*📧 メールで自動取得*"}
                 })
-                for rule in email_rules:
+                for rule in email_items:
                     fetch_label = "添付PDF" if rule.fetch_type == "attachment" else "リンク"
                     blocks.append({
                         "type": "section",

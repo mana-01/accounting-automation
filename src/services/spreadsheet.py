@@ -8,7 +8,7 @@ from googleapiclient.discovery import build
 
 from ..models import (
     Subscription,
-    EmailRule,
+    SubscriptionRule,
     Invoice,
     ReconciliationResult,
     SHEET_NAMES,
@@ -178,10 +178,10 @@ class SpreadsheetService:
 
     # ===== Subscription (取得ルール) methods =====
 
-    def get_email_rules(self, active_only: bool = True, category: str = None) -> list[EmailRule]:
+    def get_subscriptions(self, active_only: bool = True, category: str = None) -> list[SubscriptionRule]:
         """取得ルール一覧を取得（カテゴリでフィルタ可能）"""
         rows = self._read_sheet(SHEET_NAMES["SUBSCRIPTIONS"])
-        rules = [EmailRule.from_row(row) for row in rows if row]
+        rules = [SubscriptionRule.from_row(row) for row in rows if row]
 
         if active_only:
             rules = [r for r in rules if r.is_active]
@@ -189,20 +189,20 @@ class SpreadsheetService:
             rules = [r for r in rules if r.category.value == category]
         return rules
 
-    def add_email_rule(self, rule: EmailRule) -> None:
+    def add_subscription_rule(self, rule: SubscriptionRule) -> None:
         """取得ルールを追加"""
         self._append_rows(SHEET_NAMES["SUBSCRIPTIONS"], [rule.to_row()])
 
-    def delete_email_rule(self, rule_name: str) -> None:
+    def delete_subscription_rule(self, rule_name: str) -> None:
         """取得ルールを削除（is_active=falseに設定）"""
         rows = self._read_sheet(SHEET_NAMES["SUBSCRIPTIONS"])
         for i, row in enumerate(rows):
             if row and row[0] == rule_name:
-                rule = EmailRule.from_row(row)
+                rule = SubscriptionRule.from_row(row)
                 rule.is_active = False
                 self._update_row(SHEET_NAMES["SUBSCRIPTIONS"], i, rule.to_row())
                 return
-        raise ValueError(f"Email rule not found: {rule_name}")
+        raise ValueError(f"Subscription rule not found: {rule_name}")
 
     # ===== Invoice methods =====
 

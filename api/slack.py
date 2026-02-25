@@ -253,7 +253,7 @@ def _open_add_rule_modal(client, body, respond):
     try:
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=_build_add_email_rule_modal_view("email"),
+            view=_build_add_subscription_modal_view("email"),
         )
     except Exception as e:
         error_msg = str(e)
@@ -319,7 +319,7 @@ def handle_fetch_invoices(ack, respond, body, client):
 
         # Step 3: ルール取得
         try:
-            rules = invoice_fetcher.get_email_rules()
+            rules = invoice_fetcher.get_subscriptions()
             client.chat_postMessage(
                 channel=user_id,
                 text=f"🔄 [3/4] メール取得ルール: {len(rules)}件取得"
@@ -517,7 +517,7 @@ def _list_subscriptions(ack, respond, body, client):
         from api.services.invoice_fetcher import invoice_fetcher
 
         # --- 取得ルール一覧を subscriptions シートから読み込み ---
-        all_rules = _read_email_rules()
+        all_rules = _read_subscriptions()
         email_items = [r for r in all_rules if r["category"] == "email"]
         manual_items = [r for r in all_rules if r["category"] == "manual"]
         scan_items = [r for r in all_rules if r["category"] == "scan"]
@@ -554,7 +554,7 @@ def _list_subscriptions(ack, respond, body, client):
                         "type": "button",
                         "text": {"type": "plain_text", "text": "削除"},
                         "style": "danger",
-                        "action_id": "delete_email_rule",
+                        "action_id": "delete_subscription_rule",
                         "value": str(item["row_num"])
                     }
                 })
@@ -579,7 +579,7 @@ def _list_subscriptions(ack, respond, body, client):
                         "type": "button",
                         "text": {"type": "plain_text", "text": "削除"},
                         "style": "danger",
-                        "action_id": "delete_email_rule",
+                        "action_id": "delete_subscription_rule",
                         "value": str(item["row_num"])
                     }
                 })
@@ -602,7 +602,7 @@ def _list_subscriptions(ack, respond, body, client):
                         "type": "button",
                         "text": {"type": "plain_text", "text": "削除"},
                         "style": "danger",
-                        "action_id": "delete_email_rule",
+                        "action_id": "delete_subscription_rule",
                         "value": str(item["row_num"])
                     }
                 })
@@ -615,7 +615,7 @@ def _list_subscriptions(ack, respond, body, client):
                     "type": "button",
                     "text": {"type": "plain_text", "text": "➕ 項目を追加"},
                     "style": "primary",
-                    "action_id": "open_add_email_rule_modal"
+                    "action_id": "open_add_subscription_modal"
                 }
             ]
         })
@@ -633,8 +633,8 @@ def _list_subscriptions(ack, respond, body, client):
         )
 
 
-@slack_app.action("delete_email_rule")
-def handle_delete_email_rule(ack, body, client):
+@slack_app.action("delete_subscription_rule")
+def handle_delete_subscription_rule(ack, body, client):
     """取得ルールを削除（is_active=falseに設定）"""
     ack()
 
@@ -642,7 +642,7 @@ def handle_delete_email_rule(ack, body, client):
     user_id = body["user"]["id"]
 
     try:
-        sheets, spreadsheet_id = _get_email_rules_sheets()
+        sheets, spreadsheet_id = _get_subscription_sheets()
 
         # is_activeをfalseに更新（列I = 9番目）
         sheets.spreadsheets().values().update(
@@ -1803,19 +1803,19 @@ def cron_fetch_invoices():
 # === Email Rules Management (メール自動取得 / 手動確認 / スキャン) ===
 
 
-def _get_email_rules_sheets():
+def _get_subscription_sheets():
     """subscriptions シートのAPIアクセスを取得"""
     from api.services.invoice_fetcher import invoice_fetcher
     return invoice_fetcher.sheets, invoice_fetcher.spreadsheet_id
 
 
-def _read_email_rules():
+def _read_subscriptions():
     """subscriptions シートからアクティブな項目を読み取る
 
     カラム: A:name, B:category, C:sender_email, D:subject_pattern,
             E:fetch_type, F:url, G:notes, H:link_selector, I:is_active
     """
-    sheets, spreadsheet_id = _get_email_rules_sheets()
+    sheets, spreadsheet_id = _get_subscription_sheets()
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
         range="subscriptions!A2:I100"
@@ -1842,7 +1842,7 @@ def _read_email_rules():
     return items
 
 
-def _build_add_email_rule_modal_view(selected_category="email"):
+def _build_add_subscription_modal_view(selected_category="email"):
     """カテゴリに応じた取得ルール追加モーダルを構築"""
     category_block = {
         "type": "input",
@@ -1954,7 +1954,7 @@ def _build_add_email_rule_modal_view(selected_category="email"):
 
     return {
         "type": "modal",
-        "callback_id": "add_email_rule_modal",
+        "callback_id": "add_subscription_modal",
         "title": {"type": "plain_text", "text": "取得ルール追加"},
         "submit": {"type": "plain_text", "text": "追加"},
         "close": {"type": "plain_text", "text": "キャンセル"},
@@ -1962,17 +1962,17 @@ def _build_add_email_rule_modal_view(selected_category="email"):
     }
 
 
-@slack_app.action("open_add_email_rule_modal")
-def handle_open_add_email_rule_modal(ack, body, client):
+@slack_app.action("open_add_subscription_modal")
+def handle_open_add_subscription_modal(ack, body, client):
     """取得ルール追加モーダルを開く"""
     ack()
     try:
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=_build_add_email_rule_modal_view("email"),
+            view=_build_add_subscription_modal_view("email"),
         )
     except Exception as e:
-        print(f"[email_rules] Failed to open modal: {e}")
+        print(f"[subscriptions] Failed to open modal: {e}")
 
 
 @slack_app.action("rule_category_select")
@@ -1983,12 +1983,12 @@ def handle_rule_category_select(ack, body, client):
     view_id = body["view"]["id"]
     client.views_update(
         view_id=view_id,
-        view=_build_add_email_rule_modal_view(selected_category)
+        view=_build_add_subscription_modal_view(selected_category)
     )
 
 
-@slack_app.view("add_email_rule_modal")
-def handle_add_email_rule_submission(ack, body, client, view):
+@slack_app.view("add_subscription_modal")
+def handle_add_subscription_submission(ack, body, client, view):
     """取得ルール追加の処理"""
     ack()
 
@@ -2014,7 +2014,7 @@ def handle_add_email_rule_submission(ack, body, client, view):
         elif category == "scan":
             notes = values.get("notes_block", {}).get("notes_input", {}).get("value") or ""
 
-        sheets, spreadsheet_id = _get_email_rules_sheets()
+        sheets, spreadsheet_id = _get_subscription_sheets()
         # 列順: name(A), category(B), sender_email(C), subject_pattern(D),
         #       fetch_type(E), url(F), notes(G), link_selector(H), is_active(I)
         sheets.spreadsheets().values().append(

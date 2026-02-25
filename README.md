@@ -185,8 +185,7 @@ accounting-automation/
 
 | シート名 | 内容 |
 |---------|------|
-| `subscriptions` | サブスクリプション一覧 |
-| `email_rules` | メール取得ルール |
+| `subscriptions` | 取得ルール（メール自動取得 / 手動確認 / スキャン） |
 | `invoices` | 請求書一覧 |
 | `reconciliation_history` | 照会履歴 |
 

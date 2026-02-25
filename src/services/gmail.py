@@ -8,7 +8,7 @@ from typing import Optional
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 
-from ..models import EmailRule, Invoice, InvoiceStatus
+from ..models import SubscriptionRule, Invoice, InvoiceStatus
 import uuid
 
 
@@ -45,7 +45,7 @@ class GmailService:
 
     def search_emails(
         self,
-        rule: EmailRule,
+        rule: SubscriptionRule,
         after_date: Optional[datetime] = None
     ) -> list[dict]:
         """ルールに基づいてメールを検索"""
@@ -78,7 +78,7 @@ class GmailService:
 
     def _build_search_query(
         self,
-        rule: EmailRule,
+        rule: SubscriptionRule,
         after_date: Optional[datetime] = None
     ) -> str:
         """Gmail検索クエリを構築"""

@@ -322,7 +322,7 @@ class InvoiceFetcher:
             self._sheets = build("sheets", "v4", credentials=creds)
         return self._sheets
 
-    def get_email_rules(self) -> list[dict]:
+    def get_subscriptions(self) -> list[dict]:
         """Spreadsheetからメール取得ルールを読み込む（category=email のみ）
 
         subscriptions シートのカラム:
@@ -773,7 +773,7 @@ class InvoiceFetcher:
 
     def fetch_invoices(self, days_back: int = 30) -> dict:
         """メールから請求書PDFを取得しDriveに保存、保存成功したら自動登録"""
-        rules = self.get_email_rules()
+        rules = self.get_subscriptions()
         results = {
             "processed": 0,
             "saved": 0,
@@ -889,7 +889,7 @@ class InvoiceFetcher:
         period_str: "202602" or "202509~202601"
         """
         periods = parse_period(period_str)
-        rules = self.get_email_rules()
+        rules = self.get_subscriptions()
 
         results = {
             "processed": 0,
@@ -1453,7 +1453,7 @@ class InvoiceFetcher:
         ※csv_transactionsのstatus=matchedは呼び出し元でフィルタ済み
         """
         invoices = self.get_invoices_for_period(period_code)
-        rules = self.get_email_rules()
+        rules = self.get_subscriptions()
         rule_names = {self._normalize_text(r["name"]) for r in rules}
 
         matched = []
