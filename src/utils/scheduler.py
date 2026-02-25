@@ -64,7 +64,7 @@ class Scheduler:
         try:
             period = spreadsheet_service.get_current_period()
 
-            # ②手動確認項目と③固定スキャンをemail_rulesシートから取得
+            # ②手動確認項目と③固定スキャンをsubscriptionsシートから取得
             manual_items = spreadsheet_service.get_email_rules(active_only=True, category="manual")
             scan_items = spreadsheet_service.get_email_rules(active_only=True, category="scan")
 

@@ -110,7 +110,12 @@ class Subscription:
 
 @dataclass
 class EmailRule:
-    """請求書取得ルール（メール自動取得 / 手動確認 / スキャン）"""
+    """請求書取得ルール（メール自動取得 / 手動確認 / スキャン）
+
+    subscriptions シートのカラム対応:
+      A: name, B: category, C: sender_email, D: subject_pattern,
+      E: fetch_type, F: url, G: notes, H: link_selector, I: is_active
+    """
     name: str
     category: EmailRuleCategory = EmailRuleCategory.EMAIL
     sender_email: str = ""          # メール自動取得: 送信元メールアドレス
@@ -119,45 +124,35 @@ class EmailRule:
     url: str = ""                   # 手動確認: 確認先URL
     notes: str = ""                 # 手動確認/スキャン: 備考
     link_selector: Optional[str] = None  # メール自動取得: CSSセレクタ
-    file_naming: str = "rename"     # メール自動取得: "rename" or "original"
-    subscription_id: str = ""       # メール自動取得: 紐づくサブスクID
     is_active: bool = True
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_row(self) -> list:
+        """subscriptions シートの1行に変換 (A-I)"""
         return [
-            self.id,
-            self.name,
-            self.category.value,
-            self.sender_email,
-            self.subject_pattern,
-            self.fetch_type,
-            self.url,
-            self.notes,
-            self.link_selector or "",
-            self.file_naming,
-            self.subscription_id,
-            str(self.is_active),
-            self.created_at,
+            self.name,                    # A: name
+            self.category.value,          # B: category
+            self.sender_email,            # C: sender_email
+            self.subject_pattern,         # D: subject_pattern
+            self.fetch_type,              # E: fetch_type
+            self.url,                     # F: url
+            self.notes,                   # G: notes
+            self.link_selector or "",     # H: link_selector
+            str(self.is_active).lower(),  # I: is_active
         ]
 
     @classmethod
     def from_row(cls, row: list) -> "EmailRule":
+        """subscriptions シートの行から生成 (A-I)"""
         return cls(
-            id=row[0],
-            name=row[1] if len(row) > 1 else "",
-            category=EmailRuleCategory(row[2]) if len(row) > 2 and row[2] else EmailRuleCategory.EMAIL,
-            sender_email=row[3] if len(row) > 3 else "",
-            subject_pattern=row[4] if len(row) > 4 else "",
-            fetch_type=row[5] if len(row) > 5 else "attachment",
-            url=row[6] if len(row) > 6 else "",
-            notes=row[7] if len(row) > 7 else "",
-            link_selector=row[8] if len(row) > 8 and row[8] else None,
-            file_naming=row[9] if len(row) > 9 and row[9] in ("rename", "original") else "rename",
-            subscription_id=row[10] if len(row) > 10 else "",
-            is_active=row[11].lower() == "true" if len(row) > 11 and row[11] else True,
-            created_at=row[12] if len(row) > 12 else datetime.now().isoformat(),
+            name=row[0] if len(row) > 0 else "",              # A
+            category=EmailRuleCategory(row[1]) if len(row) > 1 and row[1] else EmailRuleCategory.EMAIL,  # B
+            sender_email=row[2] if len(row) > 2 else "",      # C
+            subject_pattern=row[3] if len(row) > 3 else "",   # D
+            fetch_type=row[4] if len(row) > 4 else "attachment",  # E
+            url=row[5] if len(row) > 5 else "",               # F
+            notes=row[6] if len(row) > 6 else "",             # G
+            link_selector=row[7] if len(row) > 7 and row[7] else None,  # H
+            is_active=row[8].lower() == "true" if len(row) > 8 and row[8] else True,  # I
         )
 
 
@@ -270,24 +265,33 @@ class ReconciliationResult:
 
 # Spreadsheet シート名
 SHEET_NAMES = {
-    "SUBSCRIPTIONS": "subscriptions",
-    "EMAIL_RULES": "email_rules",
+    "SUBSCRIPTIONS": "subscriptions",           # 取得ルール（email/manual/scan）
+    "SUBSCRIPTION_MASTER": "subscription_master",  # サブスク定義（金額・支払方法等）
     "INVOICES": "invoices",
     "RECONCILIATION_HISTORY": "reconciliation_history",
     "SETTINGS": "settings",
 }
 
 # 各シートのヘッダー
+# subscriptions シート（旧 email_rules）
+#   A: name            サービス名（共通）
+#   B: category        種別 email / manual / scan
+#   C: sender_email    メール自動取得: 送信元メールアドレス
+#   D: subject_pattern メール自動取得: 件名パターン
+#   E: fetch_type      メール自動取得: attachment / link
+#   F: url             手動確認: 確認先URL
+#   G: notes           手動確認/スキャン: 備考
+#   H: link_selector   メール自動取得: リンク取得時CSSセレクタ
+#   I: is_active       有効フラグ true / false
 SHEET_HEADERS = {
     "subscriptions": [
+        "name", "category", "sender_email", "subject_pattern",
+        "fetch_type", "url", "notes", "link_selector", "is_active"
+    ],
+    "subscription_master": [
         "id", "name", "vendor", "amount", "currency", "billing_day",
         "billing_cycle", "payment_method", "fetch_method", "file_naming",
         "email_subject", "login_url", "is_active", "created_at", "updated_at"
-    ],
-    "email_rules": [
-        "id", "name", "category", "sender_email", "subject_pattern",
-        "fetch_type", "url", "notes", "link_selector", "file_naming",
-        "subscription_id", "is_active", "created_at"
     ],
     "invoices": [
         "id", "subscription_id", "subscription_name", "amount", "currency",
