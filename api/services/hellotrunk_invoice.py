@@ -59,7 +59,9 @@ def _fetch_template_from_drive() -> bytes:
     results = invoice_fetcher.drive.files().list(
         q=query,
         spaces="drive",
-        fields="files(id, name)"
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
 
     files = results.get("files", [])
@@ -73,7 +75,7 @@ def _fetch_template_from_drive() -> bytes:
     file_id = files[0]["id"]
 
     # ダウンロード
-    request = invoice_fetcher.drive.files().get_media(fileId=file_id)
+    request = invoice_fetcher.drive.files().get_media(fileId=file_id, supportsAllDrives=True)
     buf = BytesIO()
     downloader = MediaIoBaseDownload(buf, request)
     done = False
