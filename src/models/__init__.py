@@ -41,7 +41,7 @@ class ReconciliationStatus(Enum):
     PENDING_INVOICES = "pending_invoices"
 
 
-class EmailRuleCategory(Enum):
+class SubscriptionCategory(Enum):
     EMAIL = "email"            # メールで自動取得
     MANUAL = "manual"          # ②手動確認
     SCAN = "scan"              # ③固定スキャン
@@ -109,7 +109,7 @@ class Subscription:
 
 
 @dataclass
-class EmailRule:
+class SubscriptionRule:
     """請求書取得ルール（メール自動取得 / 手動確認 / スキャン）
 
     subscriptions シートのカラム対応:
@@ -117,7 +117,7 @@ class EmailRule:
       E: fetch_type, F: url, G: notes, H: link_selector, I: is_active
     """
     name: str
-    category: EmailRuleCategory = EmailRuleCategory.EMAIL
+    category: SubscriptionCategory = SubscriptionCategory.EMAIL
     sender_email: str = ""          # メール自動取得: 送信元メールアドレス
     subject_pattern: str = ""       # メール自動取得: 件名パターン
     fetch_type: str = "attachment"  # メール自動取得: "attachment" or "link"
@@ -141,11 +141,11 @@ class EmailRule:
         ]
 
     @classmethod
-    def from_row(cls, row: list) -> "EmailRule":
+    def from_row(cls, row: list) -> "SubscriptionRule":
         """subscriptions シートの行から生成 (A-I)"""
         return cls(
             name=row[0] if len(row) > 0 else "",              # A
-            category=EmailRuleCategory(row[1]) if len(row) > 1 and row[1] else EmailRuleCategory.EMAIL,  # B
+            category=SubscriptionCategory(row[1]) if len(row) > 1 and row[1] else SubscriptionCategory.EMAIL,  # B
             sender_email=row[2] if len(row) > 2 else "",      # C
             subject_pattern=row[3] if len(row) > 3 else "",   # D
             fetch_type=row[4] if len(row) > 4 else "attachment",  # E

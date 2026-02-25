@@ -6,7 +6,7 @@ import requests
 from datetime import datetime
 from slack_bolt import App
 
-from ..models import Subscription, Invoice, EmailRule, EmailRuleCategory, BillingCycle, PaymentMethod, FetchMethod, FileNamingRule, InvoiceStatus
+from ..models import Subscription, Invoice, SubscriptionRule, SubscriptionCategory, BillingCycle, PaymentMethod, FetchMethod, FileNamingRule, InvoiceStatus
 from ..services.spreadsheet import spreadsheet_service
 from ..services.drive import drive_service
 from ..services.reconciliation import reconciliation_service
@@ -29,8 +29,8 @@ def register_actions(app: App):
             view=_build_add_rule_modal(selected_category)
         )
 
-    @app.view("add_email_rule_modal")
-    def handle_add_email_rule_submission(ack, body, client, view, logger):
+    @app.view("add_subscription_modal")
+    def handle_add_subscription_submission(ack, body, client, view, logger):
         """取得ルール登録モーダルの送信処理"""
         ack()
 
@@ -40,10 +40,10 @@ def register_actions(app: App):
             # 共通フィールド
             category_value = values["category_block"]["rule_category_select"]["selected_option"]["value"]
             name = values["name_block"]["name_input"]["value"]
-            category = EmailRuleCategory(category_value)
+            category = SubscriptionCategory(category_value)
 
             # カテゴリ別フィールドを取得
-            rule = EmailRule(name=name, category=category)
+            rule = SubscriptionRule(name=name, category=category)
 
             if category_value == "email":
                 rule.sender_email = values["sender_email_block"]["sender_email_input"]["value"]
@@ -59,7 +59,7 @@ def register_actions(app: App):
                 rule.notes = notes_val or ""
 
             # 保存
-            spreadsheet_service.add_email_rule(rule)
+            spreadsheet_service.add_subscription_rule(rule)
 
             # 確認メッセージを送信
             user_id = body["user"]["id"]
