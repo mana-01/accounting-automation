@@ -9,6 +9,128 @@ from ..services.reconciliation import reconciliation_service
 from ..services.drive import drive_service
 
 
+def _build_add_rule_modal(selected_category: str = "email") -> dict:
+    """カテゴリに応じた取得ルール登録モーダルを構築"""
+    # カテゴリ選択ブロック（共通）
+    category_block = {
+        "type": "input",
+        "block_id": "category_block",
+        "dispatch_action": True,
+        "label": {"type": "plain_text", "text": "種別"},
+        "element": {
+            "type": "static_select",
+            "action_id": "rule_category_select",
+            "initial_option": {
+                "email": {"text": {"type": "plain_text", "text": "メールで自動取得"}, "value": "email"},
+                "manual": {"text": {"type": "plain_text", "text": "手動確認"}, "value": "manual"},
+                "scan": {"text": {"type": "plain_text", "text": "スキャン"}, "value": "scan"},
+            }[selected_category],
+            "options": [
+                {"text": {"type": "plain_text", "text": "メールで自動取得"}, "value": "email"},
+                {"text": {"type": "plain_text", "text": "手動確認"}, "value": "manual"},
+                {"text": {"type": "plain_text", "text": "スキャン"}, "value": "scan"},
+            ]
+        }
+    }
+
+    # 名前ブロック（共通）
+    name_block = {
+        "type": "input",
+        "block_id": "name_block",
+        "label": {"type": "plain_text", "text": "名前"},
+        "element": {
+            "type": "plain_text_input",
+            "action_id": "name_input",
+            "placeholder": {"type": "plain_text", "text": "例: AWS"}
+        }
+    }
+
+    blocks = [category_block, name_block]
+
+    if selected_category == "email":
+        blocks.extend([
+            {
+                "type": "input",
+                "block_id": "sender_email_block",
+                "label": {"type": "plain_text", "text": "送信元メールアドレス"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "sender_email_input",
+                    "placeholder": {"type": "plain_text", "text": "例: billing@example.com"}
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "subject_block",
+                "label": {"type": "plain_text", "text": "件名パターン"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "subject_input",
+                    "placeholder": {"type": "plain_text", "text": "例: 請求書"}
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "fetch_type_block",
+                "label": {"type": "plain_text", "text": "タイプ"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "fetch_type_select",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "添付PDF"}, "value": "attachment"},
+                        {"text": {"type": "plain_text", "text": "リンク"}, "value": "link"},
+                    ]
+                }
+            },
+        ])
+    elif selected_category == "manual":
+        blocks.extend([
+            {
+                "type": "input",
+                "block_id": "url_block",
+                "label": {"type": "plain_text", "text": "確認先URL"},
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "url_input",
+                    "placeholder": {"type": "plain_text", "text": "例: https://example.com/invoices"}
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "notes_block",
+                "label": {"type": "plain_text", "text": "備考"},
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "notes_input",
+                    "placeholder": {"type": "plain_text", "text": "例: ログイン後マイページから取得"}
+                }
+            },
+        ])
+    elif selected_category == "scan":
+        blocks.append({
+            "type": "input",
+            "block_id": "notes_block",
+            "label": {"type": "plain_text", "text": "備考"},
+            "optional": True,
+            "element": {
+                "type": "plain_text_input",
+                "action_id": "notes_input",
+                "placeholder": {"type": "plain_text", "text": "例: 毎月届く紙の領収書"}
+            }
+        })
+
+    return {
+        "type": "modal",
+        "callback_id": "add_email_rule_modal",
+        "title": {"type": "plain_text", "text": "取得ルール登録"},
+        "submit": {"type": "plain_text", "text": "登録"},
+        "close": {"type": "plain_text", "text": "キャンセル"},
+        "blocks": blocks
+    }
+
+
 def register_commands(app: App):
     """スラッシュコマンドを登録"""
 
@@ -115,52 +237,82 @@ def register_commands(app: App):
 
     @app.command("/accounting-subscriptions")
     def handle_subscriptions(ack, respond):
-        """サブスク一覧を表示"""
+        """取得ルール一覧を表示（メール自動取得 / 手動確認 / スキャン）"""
         ack()
 
         try:
-            subscriptions = spreadsheet_service.get_subscriptions()
+            rules = spreadsheet_service.get_email_rules()
 
-            if not subscriptions:
-                respond("登録されているサブスクリプションはありません。")
+            if not rules:
+                respond("登録されている取得ルールはありません。\n`/accounting-add-subscription` で追加できます。")
                 return
 
             blocks = [
                 {
                     "type": "header",
-                    "text": {"type": "plain_text", "text": "📋 サブスクリプション一覧"}
+                    "text": {"type": "plain_text", "text": "📋 取得ルール一覧"}
                 }
             ]
 
-            for sub in subscriptions[:20]:  # 最大20件
-                status_emoji = "✅" if sub.is_active else "⏸️"
-                fetch_emoji = {
-                    "email_pdf": "📧",
-                    "email_link": "🔗",
-                    "login": "🔐",
-                    "manual": "✋"
-                }.get(sub.fetch_method.value, "❓")
+            # カテゴリ別にグループ化
+            email_rules = [r for r in rules if r.category.value == "email"]
+            manual_rules = [r for r in rules if r.category.value == "manual"]
+            scan_rules = [r for r in rules if r.category.value == "scan"]
 
-                naming_tag = "Rename" if sub.file_naming.value == "rename" else "Original"
+            if email_rules:
                 blocks.append({
                     "type": "section",
-                    "text": {
-                        "type": "mrkdwn",
-                        "text": (
-                            f"{status_emoji} *{sub.name}* ({sub.vendor})\n"
-                            f"💰 ¥{sub.amount:,.0f} / {sub.billing_cycle.value}\n"
-                            f"{fetch_emoji} 取得方法: {sub.fetch_method.value} | 📎 命名: `{naming_tag}`"
-                        )
-                    }
+                    "text": {"type": "mrkdwn", "text": "*📧 メールで自動取得*"}
                 })
+                for rule in email_rules:
+                    fetch_label = "添付PDF" if rule.fetch_type == "attachment" else "リンク"
+                    blocks.append({
+                        "type": "section",
+                        "text": {
+                            "type": "mrkdwn",
+                            "text": (
+                                f"• *{rule.name}*\n"
+                                f"  送信元: `{rule.sender_email}` | 件名: `{rule.subject_pattern}` | タイプ: {fetch_label}"
+                            )
+                        }
+                    })
 
-            if len(subscriptions) > 20:
+            if manual_rules:
                 blocks.append({
-                    "type": "context",
-                    "elements": [
-                        {"type": "mrkdwn", "text": f"他 {len(subscriptions) - 20} 件..."}
-                    ]
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "*✋ 手動確認*"}
                 })
+                for rule in manual_rules:
+                    line = f"• *{rule.name}*"
+                    if rule.url:
+                        line = f"• <{rule.url}|*{rule.name}*>"
+                    if rule.notes:
+                        line += f"（{rule.notes}）"
+                    blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": line}
+                    })
+
+            if scan_rules:
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "*📄 固定スキャン*"}
+                })
+                for rule in scan_rules:
+                    line = f"• *{rule.name}*"
+                    if rule.notes:
+                        line += f"（{rule.notes}）"
+                    blocks.append({
+                        "type": "section",
+                        "text": {"type": "mrkdwn", "text": line}
+                    })
+
+            blocks.append({
+                "type": "context",
+                "elements": [
+                    {"type": "mrkdwn", "text": "`/accounting-add-subscription` で項目を追加できます"}
+                ]
+            })
 
             respond({"response_type": "ephemeral", "blocks": blocks})
         except Exception as e:
@@ -168,117 +320,12 @@ def register_commands(app: App):
 
     @app.command("/accounting-add-subscription")
     def handle_add_subscription(ack, client, body):
-        """新規サブスク登録モーダルを表示"""
+        """取得ルール登録モーダルを表示（カテゴリ選択→動的フォーム）"""
         ack()
 
         client.views_open(
             trigger_id=body["trigger_id"],
-            view={
-                "type": "modal",
-                "callback_id": "add_subscription_modal",
-                "title": {"type": "plain_text", "text": "サブスク登録"},
-                "submit": {"type": "plain_text", "text": "登録"},
-                "close": {"type": "plain_text", "text": "キャンセル"},
-                "blocks": [
-                    {
-                        "type": "input",
-                        "block_id": "name_block",
-                        "label": {"type": "plain_text", "text": "サービス名"},
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "name_input",
-                            "placeholder": {"type": "plain_text", "text": "例: AWS"}
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "vendor_block",
-                        "label": {"type": "plain_text", "text": "ベンダー名"},
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "vendor_input",
-                            "placeholder": {"type": "plain_text", "text": "例: Amazon Web Services"}
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "amount_block",
-                        "label": {"type": "plain_text", "text": "金額 (円)"},
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "amount_input",
-                            "placeholder": {"type": "plain_text", "text": "例: 10000"}
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "cycle_block",
-                        "label": {"type": "plain_text", "text": "請求サイクル"},
-                        "element": {
-                            "type": "static_select",
-                            "action_id": "cycle_select",
-                            "options": [
-                                {"text": {"type": "plain_text", "text": "月次"}, "value": "monthly"},
-                                {"text": {"type": "plain_text", "text": "年次"}, "value": "yearly"},
-                                {"text": {"type": "plain_text", "text": "四半期"}, "value": "quarterly"},
-                            ]
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "payment_block",
-                        "label": {"type": "plain_text", "text": "支払方法"},
-                        "element": {
-                            "type": "static_select",
-                            "action_id": "payment_select",
-                            "options": [
-                                {"text": {"type": "plain_text", "text": "カード"}, "value": "card"},
-                                {"text": {"type": "plain_text", "text": "銀行振込"}, "value": "bank"},
-                            ]
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "fetch_block",
-                        "label": {"type": "plain_text", "text": "請求書取得方法"},
-                        "element": {
-                            "type": "static_select",
-                            "action_id": "fetch_select",
-                            "options": [
-                                {"text": {"type": "plain_text", "text": "メール (PDF添付)"}, "value": "email_pdf"},
-                                {"text": {"type": "plain_text", "text": "メール (リンク)"}, "value": "email_link"},
-                                {"text": {"type": "plain_text", "text": "ログイン取得"}, "value": "login"},
-                                {"text": {"type": "plain_text", "text": "手動"}, "value": "manual"},
-                            ]
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "file_naming_block",
-                        "label": {"type": "plain_text", "text": "ファイル命名ルール"},
-                        "element": {
-                            "type": "static_select",
-                            "action_id": "file_naming_select",
-                            "initial_option": {"text": {"type": "plain_text", "text": "Rename (日付_ベンダー_金額)"}, "value": "rename"},
-                            "options": [
-                                {"text": {"type": "plain_text", "text": "Rename (日付_ベンダー_金額)"}, "value": "rename"},
-                                {"text": {"type": "plain_text", "text": "Original (元のファイル名)"}, "value": "original"},
-                            ]
-                        }
-                    },
-                    {
-                        "type": "input",
-                        "block_id": "email_subject_block",
-                        "label": {"type": "plain_text", "text": "メール件名パターン (オプション)"},
-                        "optional": True,
-                        "element": {
-                            "type": "plain_text_input",
-                            "action_id": "email_subject_input",
-                            "placeholder": {"type": "plain_text", "text": "例: AWS請求書"}
-                        }
-                    }
-                ]
-            }
+            view=_build_add_rule_modal("email")
         )
 
     @app.command("/accounting-invoices")

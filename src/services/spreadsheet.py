@@ -9,10 +9,9 @@ from googleapiclient.discovery import build
 from ..models import (
     Subscription,
     EmailRule,
+    EmailRuleCategory,
     Invoice,
     ReconciliationResult,
-    ReminderItem,
-    ReminderCategory,
     SHEET_NAMES,
     SHEET_HEADERS,
 )
@@ -180,18 +179,31 @@ class SpreadsheetService:
 
     # ===== Email Rule methods =====
 
-    def get_email_rules(self, active_only: bool = True) -> list[EmailRule]:
-        """メール取得ルール一覧を取得"""
+    def get_email_rules(self, active_only: bool = True, category: str = None) -> list[EmailRule]:
+        """取得ルール一覧を取得（カテゴリでフィルタ可能）"""
         rows = self._read_sheet(SHEET_NAMES["EMAIL_RULES"])
         rules = [EmailRule.from_row(row) for row in rows if row]
 
         if active_only:
-            return [r for r in rules if r.is_active]
+            rules = [r for r in rules if r.is_active]
+        if category:
+            rules = [r for r in rules if r.category.value == category]
         return rules
 
     def add_email_rule(self, rule: EmailRule) -> None:
-        """メール取得ルールを追加"""
+        """取得ルールを追加"""
         self._append_rows(SHEET_NAMES["EMAIL_RULES"], [rule.to_row()])
+
+    def delete_email_rule(self, rule_id: str) -> None:
+        """取得ルールを削除（is_active=Falseに設定）"""
+        rows = self._read_sheet(SHEET_NAMES["EMAIL_RULES"])
+        for i, row in enumerate(rows):
+            if row and row[0] == rule_id:
+                rule = EmailRule.from_row(row)
+                rule.is_active = False
+                self._update_row(SHEET_NAMES["EMAIL_RULES"], i, rule.to_row())
+                return
+        raise ValueError(f"Email rule not found: {rule_id}")
 
     # ===== Invoice methods =====
 
@@ -244,34 +256,6 @@ class SpreadsheetService:
     def save_reconciliation_result(self, result: ReconciliationResult) -> None:
         """照会結果を保存"""
         self._append_rows(SHEET_NAMES["RECONCILIATION_HISTORY"], [result.to_row()])
-
-    # ===== Reminder Item methods =====
-
-    def get_reminder_items(self, active_only: bool = True, category: str = None) -> list[ReminderItem]:
-        """リマインド項目一覧を取得"""
-        rows = self._read_sheet(SHEET_NAMES["REMINDER_ITEMS"])
-        items = [ReminderItem.from_row(row) for row in rows if row]
-
-        if active_only:
-            items = [i for i in items if i.is_active]
-        if category:
-            items = [i for i in items if i.category.value == category]
-        return items
-
-    def add_reminder_item(self, item: ReminderItem) -> None:
-        """リマインド項目を追加"""
-        self._append_rows(SHEET_NAMES["REMINDER_ITEMS"], [item.to_row()])
-
-    def delete_reminder_item(self, item_id: str) -> None:
-        """リマインド項目を削除（is_active=Falseに設定）"""
-        rows = self._read_sheet(SHEET_NAMES["REMINDER_ITEMS"])
-        for i, row in enumerate(rows):
-            if row and row[0] == item_id:
-                item = ReminderItem.from_row(row)
-                item.is_active = False
-                self._update_row(SHEET_NAMES["REMINDER_ITEMS"], i, item.to_row())
-                return
-        raise ValueError(f"Reminder item not found: {item_id}")
 
     # ===== Utility methods =====
 
