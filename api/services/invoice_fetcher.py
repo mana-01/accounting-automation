@@ -14,10 +14,89 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 
 
+def _calculate_extraction_confidence(data: dict, method: str = "gemini") -> dict:
+    """
+    抽出結果の信頼度スコアを計算する。
+    Returns: {"score": float (0.0-1.0), "level": str, "details": list[str]}
+    """
+    score = 0.0
+    details = []
+
+    amount = data.get("amount")
+    vendor = data.get("vendor")
+    date = data.get("date")
+
+    # 基本スコア: 抽出方法
+    if method == "gemini":
+        score += 0.1  # Geminiベースライン
+        details.append("Gemini API使用")
+    else:
+        details.append("正規表現フォールバック使用")
+
+    # 金額 (最大 0.35)
+    if amount is not None:
+        score += 0.25
+        details.append(f"金額: ¥{amount:,}")
+        if 100 <= amount <= 10_000_000:
+            score += 0.10
+        else:
+            details.append("金額が想定範囲外(¥100〜¥10,000,000)")
+    else:
+        details.append("金額: 抽出失敗")
+
+    # 請求元 (最大 0.30)
+    if vendor:
+        score += 0.20
+        details.append(f"請求元: {vendor}")
+        # 有意味な名前かどうかチェック
+        if len(vendor) >= 2 and vendor not in ("unknown", "不明", "null", "None"):
+            score += 0.10
+        else:
+            details.append("請求元名が不明確")
+    else:
+        details.append("請求元: 抽出失敗")
+
+    # 日付 (最大 0.25)
+    if date:
+        score += 0.15
+        details.append(f"日付: {date}")
+        # YYYY-MM-DD形式の妥当性チェック
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', date):
+            try:
+                parsed = datetime.strptime(date, "%Y-%m-%d")
+                # 未来すぎる日付や古すぎる日付をチェック
+                if datetime(2020, 1, 1) <= parsed <= datetime.now() + timedelta(days=60):
+                    score += 0.10
+                else:
+                    details.append("日付が想定範囲外")
+            except ValueError:
+                details.append("日付のパース失敗")
+        else:
+            details.append("日付形式が不正（YYYY-MM-DD以外）")
+    else:
+        details.append("日付: 抽出失敗")
+
+    # 信頼度レベル判定
+    if score >= 0.80:
+        level = "high"
+    elif score >= 0.50:
+        level = "medium"
+    else:
+        level = "low"
+
+    return {
+        "score": round(score, 2),
+        "level": level,
+        "details": details,
+    }
+
+
 def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
     """
     Gemini APIを使ってPDFから請求書データを構造化抽出する
-    Returns: {"amount": int|None, "vendor": str|None, "date": str|None, "summary": str|None}
+    Returns: {"amount": int|None, "vendor": str|None, "date": str|None, "summary": str|None,
+              "confidence": {"score": float, "level": str, "details": list[str]},
+              "extraction_method": str}
     """
     try:
         import google.generativeai as genai
@@ -64,12 +143,15 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
             except (ValueError, TypeError):
                 amount = None
 
-        return {
+        result = {
             "amount": amount,
             "vendor": data.get("vendor"),
             "date": data.get("date"),
             "summary": data.get("summary"),
+            "extraction_method": "gemini",
         }
+        result["confidence"] = _calculate_extraction_confidence(result, method="gemini")
+        return result
 
     except Exception as e:
         print(f"Error extracting invoice data with Gemini: {e}")
@@ -80,7 +162,8 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
 def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
     """
     正規表現ベースのフォールバック抽出（Gemini APIが使えない場合）
-    Returns: {"amount": int|None, "vendor": None, "date": None, "summary": None}
+    Returns: {"amount": int|None, "vendor": None, "date": None, "summary": None,
+              "confidence": {...}, "extraction_method": "regex"}
     """
     try:
         import pdfplumber
@@ -93,7 +176,10 @@ def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
                     text += page_text + "\n"
 
         if not text:
-            return {"amount": None, "vendor": None, "date": None, "summary": None}
+            result = {"amount": None, "vendor": None, "date": None, "summary": None,
+                      "extraction_method": "regex"}
+            result["confidence"] = _calculate_extraction_confidence(result, method="regex")
+            return result
 
         patterns = [
             r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
@@ -122,11 +208,17 @@ def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
             if most_common:
                 amount = most_common[0][0]
 
-        return {"amount": amount, "vendor": None, "date": None, "summary": None}
+        result = {"amount": amount, "vendor": None, "date": None, "summary": None,
+                  "extraction_method": "regex"}
+        result["confidence"] = _calculate_extraction_confidence(result, method="regex")
+        return result
 
     except Exception as e:
         print(f"Error in regex PDF extraction: {e}")
-        return {"amount": None, "vendor": None, "date": None, "summary": None}
+        result = {"amount": None, "vendor": None, "date": None, "summary": None,
+                  "extraction_method": "regex"}
+        result["confidence"] = _calculate_extraction_confidence(result, method="regex")
+        return result
 
 
 def extract_amount_from_pdf(pdf_data: bytes) -> Optional[int]:
@@ -156,6 +248,79 @@ def format_invoice_filename(date: str, vendor: str, amount) -> str:
     safe_vendor = _sanitize_for_filename(vendor)
     safe_amount = str(amount) if amount else "0"
     return f"{safe_date}_{safe_vendor}_{safe_amount}.pdf"
+
+
+def analyze_original_filename(filename: str) -> dict:
+    """
+    元のファイル名が既に構造化された請求書情報を含んでいるか分析する。
+    ファイル名をリネームすべきか、そのままにすべきかの判定材料を返す。
+
+    Returns: {
+        "has_date": bool,
+        "has_amount": bool,
+        "has_vendor_like": bool,
+        "already_structured": bool,  # リネーム不要と判定
+        "reason": str,
+    }
+    """
+    name = re.sub(r'\.pdf$', '', filename, flags=re.IGNORECASE)
+
+    has_date = False
+    has_amount = False
+    has_vendor_like = False
+
+    # 日付パターン検出
+    date_patterns = [
+        r'\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}',  # 2026-02-01, 2026.02.01, 2026年2月1日
+        r'\d{8}',                                 # 20260201
+        r'\d{4}[-/]\d{1,2}',                     # 2026-02, 2026/02
+    ]
+    for pat in date_patterns:
+        if re.search(pat, name):
+            has_date = True
+            break
+
+    # 金額パターン検出
+    amount_patterns = [
+        r'[¥￥]\s*[\d,]+',            # ¥15,000
+        r'[\d,]{4,}\s*円',            # 15,000円
+        r'_[\d,]{4,}(?:\.|$|_)',      # _15000. or _15000_ (ファイル名内の金額)
+    ]
+    for pat in amount_patterns:
+        if re.search(pat, name):
+            has_amount = True
+            break
+
+    # ベンダー名らしき要素の検出（日本語文字列やアルファベット企業名）
+    # アンダースコアやハイフンで区切られた意味のある文字列
+    vendor_patterns = [
+        r'[a-zA-Z]{2,}',             # AWS, Google, etc.
+        r'[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]{2,}',  # 日本語2文字以上
+    ]
+    for pat in vendor_patterns:
+        if re.search(pat, name):
+            has_vendor_like = True
+            break
+
+    # リネーム不要判定: 既に{日付}_{名前}_{金額}に近い形式
+    already_structured = has_date and has_vendor_like
+
+    if already_structured:
+        reason = "ファイル名に日付と名前が含まれています"
+    elif has_date:
+        reason = "日付は含まれていますが、請求元が不明確です"
+    elif has_vendor_like:
+        reason = "名前は含まれていますが、日付が不明確です"
+    else:
+        reason = "構造化された情報がファイル名にありません"
+
+    return {
+        "has_date": has_date,
+        "has_amount": has_amount,
+        "has_vendor_like": has_vendor_like,
+        "already_structured": already_structured,
+        "reason": reason,
+    }
 
 
 def parse_invoice_filename(filename: str) -> dict:
@@ -781,7 +946,8 @@ class InvoiceFetcher:
             "skipped": 0,
             "errors": [],
             "register_errors": [],
-            "invoices": []
+            "invoices": [],
+            "extraction_details": [],
         }
 
         for rule in rules:
@@ -804,10 +970,14 @@ class InvoiceFetcher:
                             file_naming = rule.get("file_naming", "rename")
 
                             for att in attachments:
+                                original_filename = att["filename"]
+                                filename_analysis = analyze_original_filename(original_filename)
+
                                 if file_naming == "original":
                                     # Original: 元の添付ファイル名をそのまま使用
-                                    filename = att["filename"]
-                                    pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                    filename = original_filename
+                                    pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None,
+                                                "extraction_method": "none", "confidence": {"score": 0, "level": "low", "details": []}}
                                     inv_date = email_date
                                     inv_vendor = rule["name"]
                                     inv_amount = None
@@ -825,13 +995,29 @@ class InvoiceFetcher:
                                     try:
                                         pdf_info = extract_invoice_data_with_gemini(att["data"])
                                     except Exception as gemini_err:
-                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None,
+                                                    "extraction_method": "none", "confidence": {"score": 0, "level": "low", "details": ["Gemini抽出失敗"]}}
                                         print(f"Gemini extraction failed: {gemini_err}")
 
                                     inv_date = pdf_info.get("date") or email_date
                                     inv_vendor = pdf_info.get("vendor") or rule["name"]
                                     inv_amount = pdf_info.get("amount")
                                     filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
+
+                                # 抽出詳細を記録
+                                detail = {
+                                    "original_filename": original_filename,
+                                    "saved_filename": filename,
+                                    "file_naming_rule": file_naming,
+                                    "rule_name": rule.get("name", ""),
+                                    "extraction_method": pdf_info.get("extraction_method", "unknown"),
+                                    "confidence": pdf_info.get("confidence", {}),
+                                    "extracted_vendor": pdf_info.get("vendor"),
+                                    "extracted_amount": pdf_info.get("amount"),
+                                    "extracted_date": pdf_info.get("date"),
+                                    "filename_analysis": filename_analysis,
+                                }
+                                results["extraction_details"].append(detail)
 
                                 drive_result = self.save_to_drive(
                                     att["data"],
@@ -899,6 +1085,7 @@ class InvoiceFetcher:
             "errors": [],
             "register_errors": [],
             "invoices": [],
+            "extraction_details": [],
             "periods_created": []
         }
 
@@ -938,10 +1125,14 @@ class InvoiceFetcher:
                                 file_naming = rule.get("file_naming", "rename")
 
                                 for att in attachments:
+                                    original_filename = att["filename"]
+                                    filename_analysis = analyze_original_filename(original_filename)
+
                                     if file_naming == "original":
                                         # Original: 元の添付ファイル名をそのまま使用
-                                        filename = att["filename"]
-                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                        filename = original_filename
+                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None,
+                                                    "extraction_method": "none", "confidence": {"score": 0, "level": "low", "details": []}}
                                         inv_date = email_date
                                         inv_vendor = rule["name"]
                                         inv_amount = None
@@ -959,13 +1150,29 @@ class InvoiceFetcher:
                                         try:
                                             pdf_info = extract_invoice_data_with_gemini(att["data"])
                                         except Exception as gemini_err:
-                                            pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None}
+                                            pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None,
+                                                        "extraction_method": "none", "confidence": {"score": 0, "level": "low", "details": ["Gemini抽出失敗"]}}
                                             print(f"Gemini extraction failed: {gemini_err}")
 
                                         inv_date = pdf_info.get("date") or email_date
                                         inv_vendor = pdf_info.get("vendor") or rule["name"]
                                         inv_amount = pdf_info.get("amount")
                                         filename = format_invoice_filename(inv_date, inv_vendor, inv_amount)
+
+                                    # 抽出詳細を記録
+                                    detail = {
+                                        "original_filename": original_filename,
+                                        "saved_filename": filename,
+                                        "file_naming_rule": file_naming,
+                                        "rule_name": rule.get("name", ""),
+                                        "extraction_method": pdf_info.get("extraction_method", "unknown"),
+                                        "confidence": pdf_info.get("confidence", {}),
+                                        "extracted_vendor": pdf_info.get("vendor"),
+                                        "extracted_amount": pdf_info.get("amount"),
+                                        "extracted_date": pdf_info.get("date"),
+                                        "filename_analysis": filename_analysis,
+                                    }
+                                    results["extraction_details"].append(detail)
 
                                     drive_result = self.save_to_drive(
                                         att["data"],

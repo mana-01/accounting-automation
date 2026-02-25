@@ -366,6 +366,41 @@ def handle_fetch_invoices(ack, respond, body, client):
             error_text = "\n".join(all_errors[:5])
             summary_parts.append(f"\n⚠️ *エラー ({len(all_errors)}件):*\n{error_text}")
 
+        # 抽出精度レポート
+        extraction_details = results.get("extraction_details", [])
+        if extraction_details:
+            confidence_counts = {"high": 0, "medium": 0, "low": 0}
+            naming_counts = {"rename": 0, "original": 0}
+            for d in extraction_details:
+                conf = d.get("confidence", {})
+                level = conf.get("level", "low")
+                confidence_counts[level] = confidence_counts.get(level, 0) + 1
+                naming_counts[d.get("file_naming_rule", "rename")] += 1
+
+            total_extractions = len(extraction_details)
+            summary_parts.append(f"\n📊 *抽出精度レポート* ({total_extractions}件)")
+            summary_parts.append(
+                f"  🟢 高信頼: {confidence_counts['high']}件"
+                f"  🟡 中信頼: {confidence_counts['medium']}件"
+                f"  🔴 低信頼: {confidence_counts['low']}件"
+            )
+            summary_parts.append(
+                f"  📝 リネーム: {naming_counts['rename']}件"
+                f"  📎 元ファイル名: {naming_counts['original']}件"
+            )
+
+            # 低信頼度の抽出を詳細表示（最大3件）
+            low_conf = [d for d in extraction_details if d.get("confidence", {}).get("level") == "low"]
+            if low_conf:
+                summary_parts.append(f"\n⚠️ *要確認（低信頼度）:*")
+                for d in low_conf[:3]:
+                    orig = d.get("original_filename", "?")
+                    saved = d.get("saved_filename", "?")
+                    score = d.get("confidence", {}).get("score", 0)
+                    details = d.get("confidence", {}).get("details", [])
+                    detail_str = ", ".join(details[:3]) if details else "詳細なし"
+                    summary_parts.append(f"  • `{orig}` → `{saved}` (信頼度: {score:.0%})\n    {detail_str}")
+
         summary = "\n".join(summary_parts)
 
         if results["saved"] == 0 and not all_errors:
