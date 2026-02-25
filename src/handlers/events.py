@@ -127,14 +127,14 @@ def register_events(app: App):
                     channel=channel_id,
                     text=(
                         f"📄 PDFファイル `{file_name}` を検出しました。\n"
-                        "請求書として保存しますか？"
+                        "保存先を選択してください。"
                     ),
                     blocks=[
                         {
                             "type": "section",
                             "text": {
                                 "type": "mrkdwn",
-                                "text": f"📄 PDFファイル `{file_name}` を検出しました。"
+                                "text": f"📄 PDFファイル `{file_name}` を検出しました。\n保存先を選択してください。"
                             }
                         },
                         {
@@ -142,9 +142,21 @@ def register_events(app: App):
                             "elements": [
                                 {
                                     "type": "button",
-                                    "text": {"type": "plain_text", "text": "📁 請求書として保存"},
+                                    "text": {"type": "plain_text", "text": "クレジット請求書"},
                                     "style": "primary",
-                                    "action_id": "save_invoice_pdf",
+                                    "action_id": "save_invoice_credit",
+                                    "value": file_id
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "銀行振込請求書"},
+                                    "action_id": "save_invoice_bank",
+                                    "value": file_id
+                                },
+                                {
+                                    "type": "button",
+                                    "text": {"type": "plain_text", "text": "売上請求書"},
+                                    "action_id": "save_invoice_sales",
                                     "value": file_id
                                 },
                                 {

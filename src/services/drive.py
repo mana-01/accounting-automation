@@ -67,10 +67,30 @@ class DriveService:
         file_content: bytes,
         file_name: str,
         mime_type: str,
-        period: str
+        period: str,
+        invoice_type: str = "credit"
     ) -> dict:
-        """請求書ファイルを月別フォルダにアップロード"""
-        folder_id = self.get_or_create_monthly_folder(period)
+        """請求書ファイルを月別フォルダにアップロード
+
+        invoice_type: "credit" → クレジットサブフォルダ, "bank" → 銀行振込サブフォルダ, "sales" → 月フォルダ直下
+        """
+        monthly_folder_id = self.get_or_create_monthly_folder(period)
+
+        if invoice_type == "sales":
+            # 売上は月フォルダ直下
+            folder_id = monthly_folder_id
+        else:
+            # 支払いはサブフォルダに格納
+            # period: "2026年2月" → "202602"
+            import re
+            match = re.match(r'(\d{4})年(\d{1,2})月', period)
+            if match:
+                period_code = f"{match.group(1)}{int(match.group(2)):02d}"
+            else:
+                period_code = period
+            type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
+            sub_folder_name = f"{period_code}_{type_name}"
+            folder_id = self._get_or_create_subfolder(monthly_folder_id, sub_folder_name)
 
         # 既存ファイルをチェック
         query = f"name='{file_name}' and '{folder_id}' in parents and trashed=false"

@@ -169,6 +169,7 @@ class Invoice:
     drive_url: Optional[str] = None
     source_type: str = "manual"  # "email", "login", "manual"
     status: InvoiceStatus = InvoiceStatus.PENDING
+    invoice_type: str = "credit"  # "credit", "bank", "sales"
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -185,6 +186,7 @@ class Invoice:
             self.drive_url or "",
             self.source_type,
             self.status.value,
+            self.invoice_type,
             self.created_at,
         ]
 
@@ -202,7 +204,8 @@ class Invoice:
             drive_url=row[8] if len(row) > 8 and row[8] else None,
             source_type=row[9] if len(row) > 9 else "manual",
             status=InvoiceStatus(row[10]) if len(row) > 10 and row[10] else InvoiceStatus.PENDING,
-            created_at=row[11] if len(row) > 11 else datetime.now().isoformat(),
+            invoice_type=row[11] if len(row) > 11 and row[11] else "credit",
+            created_at=row[12] if len(row) > 12 else datetime.now().isoformat(),
         )
 
 
@@ -296,7 +299,7 @@ SHEET_HEADERS = {
     "invoices": [
         "id", "subscription_id", "subscription_name", "amount", "currency",
         "invoice_date", "due_date", "drive_file_id", "drive_url", "source_type",
-        "status", "created_at"
+        "status", "invoice_type", "created_at"
     ],
     "reconciliation_history": [
         "id", "reconciliation_date", "period", "total_transactions",

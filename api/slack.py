@@ -732,6 +732,12 @@ def _send_file_buttons(client, channel_id: str, file_id: str, file_name: str, fi
                         },
                         {
                             "type": "button",
+                            "text": {"type": "plain_text", "text": "売上請求書"},
+                            "action_id": "save_invoice_sales",
+                            "value": file_id_str
+                        },
+                        {
+                            "type": "button",
                             "text": {"type": "plain_text", "text": "スキップ"},
                             "action_id": "skip_file",
                             "value": file_id_str
@@ -958,6 +964,13 @@ def handle_save_invoice_bank(ack, body, client):
     _save_invoice_pdf(body, client, "bank")
 
 
+@slack_app.action("save_invoice_sales")
+def handle_save_invoice_sales(ack, body, client):
+    """売上請求書として保存"""
+    ack()
+    _save_invoice_pdf(body, client, "sales")
+
+
 @slack_app.action("save_invoice_pdf")
 def handle_save_invoice_pdf(ack, body, client):
     """PDFを請求書として保存（後方互換）"""
@@ -1029,7 +1042,8 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         )
 
         # Spreadsheetに記録
-        type_name = "クレジット" if invoice_type == "credit" else "銀行振込"
+        type_names = {"credit": "クレジット", "bank": "銀行振込", "sales": "売上"}
+        type_name = type_names.get(invoice_type, "クレジット")
         invoice_data = {
             "id": f"manual_{now.timestamp()}",
             "vendor": vendor,
