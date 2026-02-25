@@ -118,8 +118,13 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
         prompt = """この請求書PDFから以下の情報をJSON形式で抽出してください。
 必ず以下のJSON形式のみで回答してください。説明文は不要です。
 
+【重要: 金額の抽出ルール】
+- "amount" には必ず最終的な支払い総額（税込合計・ご請求金額・合計金額）を入れてください。
+- 「小計」「税抜金額」「消費税額」など途中の金額は絶対に使わないでください。
+- 複数の金額候補がある場合は、最終的な支払い合計額（最も大きい総額）を選んでください。
+
 {
-  "amount": 請求金額（税込合計、整数、円単位、不明ならnull）,
+  "amount": 請求金額（税込の最終支払い総額、整数、円単位、不明ならnull）,
   "vendor": "請求元の会社名・サービス名（不明ならnull）",
   "date": "請求日または発行日（YYYY-MM-DD形式、不明ならnull）",
   "summary": "請求内容の簡潔な要約（20文字以内）"
@@ -150,6 +155,18 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
             "summary": data.get("summary"),
             "extraction_method": "gemini",
         }
+
+        # Geminiで金額が取れなかった場合、regexフォールバックで補完
+        if result["amount"] is None:
+            try:
+                regex_result = _extract_amount_from_pdf_regex(pdf_data)
+                if regex_result.get("amount") is not None:
+                    result["amount"] = regex_result["amount"]
+                    result["extraction_method"] = "gemini+regex"
+                    print(f"Gemini amount was null, regex fallback found: {result['amount']}")
+            except Exception as regex_err:
+                print(f"Regex fallback also failed: {regex_err}")
+
         result["confidence"] = _calculate_extraction_confidence(result, method="gemini")
         return result
 
@@ -182,10 +199,10 @@ def _extract_amount_from_pdf_regex(pdf_data: bytes) -> dict:
             return result
 
         patterns = [
-            r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*[¥￥$]?\s*([\d,]+)',
-            r'合計[:\s]*[¥￥]?\s*([\d,]+)\s*(?:円)?',
-            r'[¥￥]\s*([\d,]{5,})',
+            r'(?:ご請求金額|お支払い?金額|請求金額|合計金額|ご利用金額|総額)[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
+            r'(?:Total|Amount\s*Due|Grand\s*Total)[:\s]*(?:JPY|[¥￥$])?\s*([\d,]+)',
+            r'合計[:\s]*(?:JPY|[¥￥])?\s*([\d,]+)\s*(?:円)?',
+            r'(?:JPY|[¥￥])\s*([\d,]{4,})',
             r'([\d,]{5,})\s*円',
         ]
 
@@ -976,22 +993,14 @@ class InvoiceFetcher:
                                 filename_analysis = analyze_original_filename(original_filename)
 
                                 if file_naming == "original":
-                                    # Original: 元の添付ファイル名をそのまま使用
+                                    # Original: 元の添付ファイル名をそのまま使用、Geminiは呼ばない
                                     filename = original_filename
-                                    pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None,
-                                                "extraction_method": "none", "confidence": {"score": 0, "level": "low", "details": []}}
-                                    inv_date = email_date
-                                    inv_vendor = rule["name"]
-                                    inv_amount = None
-
-                                    # シート登録用にGemini解析（ファイル名には使わない）
-                                    try:
-                                        pdf_info = extract_invoice_data_with_gemini(att["data"])
-                                        inv_date = pdf_info.get("date") or email_date
-                                        inv_vendor = pdf_info.get("vendor") or rule["name"]
-                                        inv_amount = pdf_info.get("amount")
-                                    except Exception as gemini_err:
-                                        print(f"Gemini extraction failed: {gemini_err}")
+                                    fn_parsed = parse_invoice_filename(original_filename)
+                                    inv_date = fn_parsed.get("date") or email_date
+                                    inv_vendor = fn_parsed.get("vendor") or rule["name"]
+                                    inv_amount = fn_parsed.get("amount")
+                                    pdf_info = {"amount": inv_amount, "vendor": inv_vendor, "date": inv_date, "summary": None,
+                                                "extraction_method": "filename", "confidence": {"score": 0, "level": "n/a", "details": ["ファイル名から抽出"]}}
                                 else:
                                     # Rename: Gemini解析して命名ルールでファイル名を生成
                                     try:
@@ -1131,22 +1140,14 @@ class InvoiceFetcher:
                                     filename_analysis = analyze_original_filename(original_filename)
 
                                     if file_naming == "original":
-                                        # Original: 元の添付ファイル名をそのまま使用
+                                        # Original: 元の添付ファイル名をそのまま使用、Geminiは呼ばない
                                         filename = original_filename
-                                        pdf_info = {"amount": None, "vendor": None, "date": None, "summary": None,
-                                                    "extraction_method": "none", "confidence": {"score": 0, "level": "low", "details": []}}
-                                        inv_date = email_date
-                                        inv_vendor = rule["name"]
-                                        inv_amount = None
-
-                                        # シート登録用にGemini解析（ファイル名には使わない）
-                                        try:
-                                            pdf_info = extract_invoice_data_with_gemini(att["data"])
-                                            inv_date = pdf_info.get("date") or email_date
-                                            inv_vendor = pdf_info.get("vendor") or rule["name"]
-                                            inv_amount = pdf_info.get("amount")
-                                        except Exception as gemini_err:
-                                            print(f"Gemini extraction failed: {gemini_err}")
+                                        fn_parsed = parse_invoice_filename(original_filename)
+                                        inv_date = fn_parsed.get("date") or email_date
+                                        inv_vendor = fn_parsed.get("vendor") or rule["name"]
+                                        inv_amount = fn_parsed.get("amount")
+                                        pdf_info = {"amount": inv_amount, "vendor": inv_vendor, "date": inv_date, "summary": None,
+                                                    "extraction_method": "filename", "confidence": {"score": 0, "level": "n/a", "details": ["ファイル名から抽出"]}}
                                     else:
                                         # Rename: Gemini解析して命名ルールでファイル名を生成
                                         try:
