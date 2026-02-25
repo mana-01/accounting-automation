@@ -64,11 +64,11 @@ class Scheduler:
         try:
             period = spreadsheet_service.get_current_period()
 
-            # ②手動取得項目と③固定スキャンをシートから取得
-            manual_items = spreadsheet_service.get_reminder_items(active_only=True, category="manual")
-            fixed_scan_items = spreadsheet_service.get_reminder_items(active_only=True, category="fixed_scan")
+            # ②手動確認項目と③固定スキャンをsubscriptionsシートから取得
+            manual_items = spreadsheet_service.get_email_rules(active_only=True, category="manual")
+            scan_items = spreadsheet_service.get_email_rules(active_only=True, category="scan")
 
-            # ②手動取得項目のテキスト構築
+            # ②手動確認項目のテキスト構築
             manual_lines = []
             for item in manual_items:
                 line = f"• {item.name}"
@@ -83,7 +83,7 @@ class Scheduler:
 
             # ③固定スキャンのテキスト構築
             fixed_lines = []
-            for item in fixed_scan_items:
+            for item in scan_items:
                 line = f"• {item.name}"
                 if item.notes:
                     line += f"（{item.notes}）"

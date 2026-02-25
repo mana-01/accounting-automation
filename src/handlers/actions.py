@@ -5,80 +5,98 @@ import requests
 from datetime import datetime
 from slack_bolt import App
 
-from ..models import Subscription, Invoice, BillingCycle, PaymentMethod, FetchMethod, FileNamingRule, InvoiceStatus
+from ..models import Subscription, Invoice, EmailRule, EmailRuleCategory, BillingCycle, PaymentMethod, FetchMethod, FileNamingRule, InvoiceStatus
 from ..services.spreadsheet import spreadsheet_service
 from ..services.drive import drive_service
 from ..services.reconciliation import reconciliation_service
+from .commands import _build_add_rule_modal
 
 
 def register_actions(app: App):
     """アクションハンドラーを登録"""
 
-    @app.view("add_subscription_modal")
-    def handle_add_subscription_submission(ack, body, client, view, logger):
-        """サブスク登録モーダルの送信処理"""
+    @app.action("rule_category_select")
+    def handle_rule_category_select(ack, body, client):
+        """取得ルール登録モーダルのカテゴリ変更時にフォームを動的に更新"""
+        ack()
+
+        selected_category = body["actions"][0]["selected_option"]["value"]
+        view_id = body["view"]["id"]
+
+        client.views_update(
+            view_id=view_id,
+            view=_build_add_rule_modal(selected_category)
+        )
+
+    @app.view("add_email_rule_modal")
+    def handle_add_email_rule_submission(ack, body, client, view, logger):
+        """取得ルール登録モーダルの送信処理"""
         ack()
 
         try:
             values = view["state"]["values"]
 
-            # 値を取得
+            # 共通フィールド
+            category_value = values["category_block"]["rule_category_select"]["selected_option"]["value"]
             name = values["name_block"]["name_input"]["value"]
-            vendor = values["vendor_block"]["vendor_input"]["value"]
-            amount_str = values["amount_block"]["amount_input"]["value"]
-            cycle = values["cycle_block"]["cycle_select"]["selected_option"]["value"]
-            payment = values["payment_block"]["payment_select"]["selected_option"]["value"]
-            fetch = values["fetch_block"]["fetch_select"]["selected_option"]["value"]
-            file_naming = values["file_naming_block"]["file_naming_select"]["selected_option"]["value"]
-            email_subject = values["email_subject_block"]["email_subject_input"].get("value")
+            category = EmailRuleCategory(category_value)
 
-            # 金額をパース
-            try:
-                amount = float(amount_str.replace(",", "").replace("¥", "").replace("円", ""))
-            except ValueError:
-                # エラーメッセージを送信
-                user_id = body["user"]["id"]
-                client.chat_postMessage(
-                    channel=user_id,
-                    text=f"❌ 金額の形式が正しくありません: {amount_str}"
-                )
-                return
+            # カテゴリ別フィールドを取得
+            rule = EmailRule(name=name, category=category)
 
-            # サブスクを作成
-            subscription = Subscription(
-                name=name,
-                vendor=vendor,
-                amount=amount,
-                billing_cycle=BillingCycle(cycle),
-                payment_method=PaymentMethod(payment),
-                fetch_method=FetchMethod(fetch),
-                file_naming=FileNamingRule(file_naming),
-                email_subject=email_subject,
-            )
+            if category_value == "email":
+                rule.sender_email = values["sender_email_block"]["sender_email_input"]["value"]
+                rule.subject_pattern = values["subject_block"]["subject_input"]["value"]
+                rule.fetch_type = values["fetch_type_block"]["fetch_type_select"]["selected_option"]["value"]
+            elif category_value == "manual":
+                url_val = values.get("url_block", {}).get("url_input", {}).get("value")
+                notes_val = values.get("notes_block", {}).get("notes_input", {}).get("value")
+                rule.url = url_val or ""
+                rule.notes = notes_val or ""
+            elif category_value == "scan":
+                notes_val = values.get("notes_block", {}).get("notes_input", {}).get("value")
+                rule.notes = notes_val or ""
 
             # 保存
-            spreadsheet_service.add_subscription(subscription)
+            spreadsheet_service.add_email_rule(rule)
 
             # 確認メッセージを送信
             user_id = body["user"]["id"]
-            file_naming_label = "Rename (日付_ベンダー_金額)" if file_naming == "rename" else "Original (元のファイル名)"
+            category_labels = {
+                "email": "📧 メールで自動取得",
+                "manual": "✋ 手動確認",
+                "scan": "📄 スキャン",
+            }
+            detail_lines = [
+                f"✅ 取得ルールを登録しました！",
+                f"• *{name}*",
+                f"• 種別: {category_labels.get(category_value, category_value)}",
+            ]
+            if category_value == "email":
+                detail_lines.append(f"• 送信元: {rule.sender_email}")
+                detail_lines.append(f"• 件名: {rule.subject_pattern}")
+                fetch_label = "添付PDF" if rule.fetch_type == "attachment" else "リンク"
+                detail_lines.append(f"• タイプ: {fetch_label}")
+            elif category_value == "manual":
+                if rule.url:
+                    detail_lines.append(f"• URL: {rule.url}")
+                if rule.notes:
+                    detail_lines.append(f"• 備考: {rule.notes}")
+            elif category_value == "scan":
+                if rule.notes:
+                    detail_lines.append(f"• 備考: {rule.notes}")
+
             client.chat_postMessage(
                 channel=user_id,
-                text=(
-                    f"✅ サブスクリプションを登録しました！\n"
-                    f"• *{name}* ({vendor})\n"
-                    f"• 💰 ¥{amount:,.0f} / {cycle}\n"
-                    f"• 取得方法: {fetch}\n"
-                    f"• ファイル命名: {file_naming_label}"
-                )
+                text="\n".join(detail_lines)
             )
 
         except Exception as e:
-            logger.error(f"Error adding subscription: {e}")
+            logger.error(f"Error adding email rule: {e}")
             user_id = body["user"]["id"]
             client.chat_postMessage(
                 channel=user_id,
-                text=f"❌ サブスクの登録に失敗しました: {str(e)}"
+                text=f"❌ 取得ルールの登録に失敗しました: {str(e)}"
             )
 
     @app.action("save_invoice_pdf")

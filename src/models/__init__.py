@@ -41,9 +41,10 @@ class ReconciliationStatus(Enum):
     PENDING_INVOICES = "pending_invoices"
 
 
-class ReminderCategory(Enum):
-    MANUAL = "manual"          # ②手動取得項目
-    FIXED_SCAN = "fixed_scan"  # ③固定スキャン
+class EmailRuleCategory(Enum):
+    EMAIL = "email"            # メールで自動取得
+    MANUAL = "manual"          # ②手動確認
+    SCAN = "scan"              # ③固定スキャン
 
 
 @dataclass
@@ -109,39 +110,49 @@ class Subscription:
 
 @dataclass
 class EmailRule:
-    """メールから請求書を取得するルール"""
-    subscription_id: str
-    subject_pattern: str  # 件名の正規表現パターン
-    sender_email: str
-    fetch_type: str = "attachment"  # "attachment" or "link"
-    link_selector: Optional[str] = None  # リンク取得時のCSSセレクタ
-    file_naming: str = "rename"  # "rename" or "original"
+    """請求書取得ルール（メール自動取得 / 手動確認 / スキャン）
+
+    subscriptions シートのカラム対応:
+      A: name, B: category, C: sender_email, D: subject_pattern,
+      E: fetch_type, F: url, G: notes, H: link_selector, I: is_active
+    """
+    name: str
+    category: EmailRuleCategory = EmailRuleCategory.EMAIL
+    sender_email: str = ""          # メール自動取得: 送信元メールアドレス
+    subject_pattern: str = ""       # メール自動取得: 件名パターン
+    fetch_type: str = "attachment"  # メール自動取得: "attachment" or "link"
+    url: str = ""                   # 手動確認: 確認先URL
+    notes: str = ""                 # 手動確認/スキャン: 備考
+    link_selector: Optional[str] = None  # メール自動取得: CSSセレクタ
     is_active: bool = True
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def to_row(self) -> list:
+        """subscriptions シートの1行に変換 (A-I)"""
         return [
-            self.id,
-            self.subscription_id,
-            self.subject_pattern,
-            self.sender_email,
-            self.fetch_type,
-            self.link_selector or "",
-            self.file_naming,
-            str(self.is_active),
+            self.name,                    # A: name
+            self.category.value,          # B: category
+            self.sender_email,            # C: sender_email
+            self.subject_pattern,         # D: subject_pattern
+            self.fetch_type,              # E: fetch_type
+            self.url,                     # F: url
+            self.notes,                   # G: notes
+            self.link_selector or "",     # H: link_selector
+            str(self.is_active).lower(),  # I: is_active
         ]
 
     @classmethod
     def from_row(cls, row: list) -> "EmailRule":
+        """subscriptions シートの行から生成 (A-I)"""
         return cls(
-            id=row[0],
-            subscription_id=row[1],
-            subject_pattern=row[2] if len(row) > 2 else "",
-            sender_email=row[3] if len(row) > 3 else "",
-            fetch_type=row[4] if len(row) > 4 else "attachment",
-            link_selector=row[5] if len(row) > 5 and row[5] else None,
-            file_naming=row[6] if len(row) > 6 and row[6] in ("rename", "original") else "rename",
-            is_active=row[7].lower() == "true" if len(row) > 7 and row[7] else True,
+            name=row[0] if len(row) > 0 else "",              # A
+            category=EmailRuleCategory(row[1]) if len(row) > 1 and row[1] else EmailRuleCategory.EMAIL,  # B
+            sender_email=row[2] if len(row) > 2 else "",      # C
+            subject_pattern=row[3] if len(row) > 3 else "",   # D
+            fetch_type=row[4] if len(row) > 4 else "attachment",  # E
+            url=row[5] if len(row) > 5 else "",               # F
+            notes=row[6] if len(row) > 6 else "",             # G
+            link_selector=row[7] if len(row) > 7 and row[7] else None,  # H
+            is_active=row[8].lower() == "true" if len(row) > 8 and row[8] else True,  # I
         )
 
 
@@ -252,61 +263,35 @@ class ReconciliationResult:
         ]
 
 
-@dataclass
-class ReminderItem:
-    """リマインド通知に表示する項目（②手動取得 / ③固定スキャン）"""
-    name: str
-    category: ReminderCategory = ReminderCategory.MANUAL
-    notes: str = ""
-    url: str = ""
-    is_active: bool = True
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
-
-    def to_row(self) -> list:
-        return [
-            self.id,
-            self.name,
-            self.category.value,
-            self.notes,
-            self.url,
-            str(self.is_active),
-            self.created_at,
-        ]
-
-    @classmethod
-    def from_row(cls, row: list) -> "ReminderItem":
-        return cls(
-            id=row[0],
-            name=row[1] if len(row) > 1 else "",
-            category=ReminderCategory(row[2]) if len(row) > 2 and row[2] else ReminderCategory.MANUAL,
-            notes=row[3] if len(row) > 3 else "",
-            url=row[4] if len(row) > 4 else "",
-            is_active=row[5].lower() == "true" if len(row) > 5 and row[5] else True,
-            created_at=row[6] if len(row) > 6 else datetime.now().isoformat(),
-        )
-
-
 # Spreadsheet シート名
 SHEET_NAMES = {
-    "SUBSCRIPTIONS": "subscriptions",
-    "EMAIL_RULES": "email_rules",
+    "SUBSCRIPTIONS": "subscriptions",           # 取得ルール（email/manual/scan）
+    "SUBSCRIPTION_MASTER": "subscription_master",  # サブスク定義（金額・支払方法等）
     "INVOICES": "invoices",
     "RECONCILIATION_HISTORY": "reconciliation_history",
     "SETTINGS": "settings",
-    "REMINDER_ITEMS": "reminder_items",
 }
 
 # 各シートのヘッダー
+# subscriptions シート（旧 email_rules）
+#   A: name            サービス名（共通）
+#   B: category        種別 email / manual / scan
+#   C: sender_email    メール自動取得: 送信元メールアドレス
+#   D: subject_pattern メール自動取得: 件名パターン
+#   E: fetch_type      メール自動取得: attachment / link
+#   F: url             手動確認: 確認先URL
+#   G: notes           手動確認/スキャン: 備考
+#   H: link_selector   メール自動取得: リンク取得時CSSセレクタ
+#   I: is_active       有効フラグ true / false
 SHEET_HEADERS = {
     "subscriptions": [
+        "name", "category", "sender_email", "subject_pattern",
+        "fetch_type", "url", "notes", "link_selector", "is_active"
+    ],
+    "subscription_master": [
         "id", "name", "vendor", "amount", "currency", "billing_day",
         "billing_cycle", "payment_method", "fetch_method", "file_naming",
         "email_subject", "login_url", "is_active", "created_at", "updated_at"
-    ],
-    "email_rules": [
-        "id", "subscription_id", "subject_pattern", "sender_email",
-        "fetch_type", "link_selector", "file_naming", "is_active"
     ],
     "invoices": [
         "id", "subscription_id", "subscription_name", "amount", "currency",
@@ -316,8 +301,5 @@ SHEET_HEADERS = {
     "reconciliation_history": [
         "id", "reconciliation_date", "period", "total_transactions",
         "matched_count", "unmatched_count", "missing_invoices_json", "status", "created_at"
-    ],
-    "reminder_items": [
-        "id", "name", "category", "notes", "url", "is_active", "created_at"
     ],
 }

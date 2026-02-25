@@ -173,7 +173,7 @@ def handle_status(ack, respond):
 
         rules_result = invoice_fetcher.sheets.spreadsheets().values().get(
             spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="email_rules!A2:E100"
+            range="subscriptions!A2:I100"
         ).execute()
         rules = rules_result.get("values", [])
 
@@ -248,77 +248,12 @@ def handle_add_email_rule(ack, client, body, respond):
     _open_add_rule_modal(client, body, respond)
 
 
-# モーダル定義（モジュール読み込み時に構築してコールドスタートの影響を最小化）
-_ADD_RULE_MODAL_VIEW = {
-    "type": "modal",
-    "callback_id": "add_email_rule_modal",
-    "title": {"type": "plain_text", "text": "メール取得ルール追加"},
-    "submit": {"type": "plain_text", "text": "追加"},
-    "close": {"type": "plain_text", "text": "キャンセル"},
-    "blocks": [
-        {
-            "type": "input",
-            "block_id": "name_block",
-            "label": {"type": "plain_text", "text": "ルール名（サービス名）"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "name_input",
-                "placeholder": {"type": "plain_text", "text": "例: AWS, GitHub, Notion"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "sender_block",
-            "label": {"type": "plain_text", "text": "送信者メールアドレス"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "sender_input",
-                "placeholder": {"type": "plain_text", "text": "例: billing@aws.amazon.com"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "subject_block",
-            "label": {"type": "plain_text", "text": "件名キーワード"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "subject_input",
-                "placeholder": {"type": "plain_text", "text": "例: Invoice, 請求書, ご利用明細"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "type_block",
-            "label": {"type": "plain_text", "text": "取得タイプ"},
-            "element": {
-                "type": "static_select",
-                "action_id": "type_select",
-                "options": [
-                    {
-                        "text": {"type": "plain_text", "text": "PDF添付ファイル"},
-                        "value": "attachment"
-                    },
-                    {
-                        "text": {"type": "plain_text", "text": "メール内リンク"},
-                        "value": "link"
-                    }
-                ],
-                "initial_option": {
-                    "text": {"type": "plain_text", "text": "PDF添付ファイル"},
-                    "value": "attachment"
-                }
-            }
-        }
-    ]
-}
-
-
 def _open_add_rule_modal(client, body, respond):
-    """ルール追加モーダルを開く共通関数"""
+    """取得ルール追加モーダルを開く共通関数"""
     try:
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=_ADD_RULE_MODAL_VIEW,
+            view=_build_add_email_rule_modal_view("email"),
         )
     except Exception as e:
         error_msg = str(e)
@@ -332,50 +267,6 @@ def _open_add_rule_modal(client, body, respond):
                 "response_type": "ephemeral",
                 "text": f"フォームの表示に失敗しました: {error_msg}"
             })
-
-
-@slack_app.view("add_email_rule_modal")
-def handle_add_email_rule_submission(ack, body, client, view):
-    """メール取得ルール追加の処理"""
-    ack()
-
-    try:
-        values = view["state"]["values"]
-        name = values["name_block"]["name_input"]["value"]
-        sender = values["sender_block"]["sender_input"]["value"]
-        subject = values["subject_block"]["subject_input"]["value"]
-        fetch_type = values["type_block"]["type_select"]["selected_option"]["value"]
-
-        from api.services.invoice_fetcher import invoice_fetcher
-
-        # Spreadsheetに追加
-        row = [name, sender, subject, fetch_type, ""]
-        invoice_fetcher.sheets.spreadsheets().values().append(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="email_rules!A:E",
-            valueInputOption="USER_ENTERED",
-            body={"values": [row]}
-        ).execute()
-
-        user_id = body["user"]["id"]
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"""✅ メール取得ルールを追加しました！
-
-• *ルール名*: {name}
-• *送信者*: {sender}
-• *件名キーワード*: {subject}
-• *取得タイプ*: {"PDF添付" if fetch_type == "attachment" else "リンク"}
-
-`/accounting-fetch-invoices` で請求書を取得できます。"""
-        )
-
-    except Exception as e:
-        user_id = body["user"]["id"]
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"❌ ルール追加エラー: {str(e)}"
-        )
 
 
 @slack_app.command("/accounting-fetch-invoices")
@@ -625,122 +516,96 @@ def _list_subscriptions(ack, respond, body, client):
     try:
         from api.services.invoice_fetcher import invoice_fetcher
 
-        # --- メール取得ルール ---
-        result = invoice_fetcher.sheets.spreadsheets().values().get(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="email_rules!A2:E100"
-        ).execute()
-
-        rows = result.get("values", [])
+        # --- 取得ルール一覧を subscriptions シートから読み込み ---
+        all_rules = _read_email_rules()
+        email_items = [r for r in all_rules if r["category"] == "email"]
+        manual_items = [r for r in all_rules if r["category"] == "manual"]
+        scan_items = [r for r in all_rules if r["category"] == "scan"]
 
         blocks = [
             {
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": "📧 *メール取得ルール*"}
+                "text": {"type": "mrkdwn", "text": "📋 *取得ルール一覧*"}
             },
             {"type": "divider"}
         ]
 
-        if not rows:
+        if not all_rules:
             blocks.append({
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": "_ルールがありません。`/accounting-add-subscription` で追加してください。_"}
             })
-        else:
-            for i, row in enumerate(rows):
-                name = row[0] if len(row) > 0 else "不明"
-                sender = row[1] if len(row) > 1 else "-"
-                subject = row[2] if len(row) > 2 else "-"
-                fetch_type = row[3] if len(row) > 3 else "attachment"
-                type_text = "PDF添付" if fetch_type == "attachment" else "リンク"
 
+        # 📧 メールで自動取得
+        if email_items:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "*📧 メールで自動取得*"}
+            })
+            for item in email_items:
+                type_text = "PDF添付" if item["fetch_type"] == "attachment" else "リンク"
                 blocks.append({
                     "type": "section",
                     "text": {
                         "type": "mrkdwn",
-                        "text": f"*{name}*\n送信者: `{sender}`\n件名: `{subject}`\nタイプ: {type_text}"
+                        "text": f"*{item['name']}*\n送信者: `{item['sender_email']}`\n件名: `{item['subject_pattern']}`\nタイプ: {type_text}"
                     },
                     "accessory": {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "削除"},
                         "style": "danger",
                         "action_id": "delete_email_rule",
-                        "value": str(i + 2)
+                        "value": str(item["row_num"])
                     }
                 })
 
-        # --- リマインド項目 (②手動取得 / ③固定スキャン) ---
-        reminder_items = _read_reminder_items()
-        manual_items = [i for i in reminder_items if i["category"] == "manual"]
-        fixed_items = [i for i in reminder_items if i["category"] == "fixed_scan"]
-
-        blocks.append({"type": "divider"})
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "📋 *リマインド通知項目*"}
-        })
-        blocks.append({"type": "divider"})
-
-        # ② 手動取得項目
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "*② 手動取得項目*"}
-        })
-
-        if not manual_items:
+        # ✋ 手動確認
+        if manual_items:
+            blocks.append({"type": "divider"})
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": "_項目なし_"}
+                "text": {"type": "mrkdwn", "text": "*✋ 手動確認*"}
             })
+            for item in manual_items:
+                label = f"*{item['name']}*"
+                if item["url"]:
+                    label = f"<{item['url']}|*{item['name']}*>"
+                if item["notes"]:
+                    label += f"（{item['notes']}）"
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": label},
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "削除"},
+                        "style": "danger",
+                        "action_id": "delete_email_rule",
+                        "value": str(item["row_num"])
+                    }
+                })
 
-        for item in manual_items:
-            label = f"*{item['name']}*"
-            if item["notes"]:
-                label += f"\n備考: {item['notes']}"
-            if item["url"]:
-                label += f"\nURL: {item['url']}"
-
+        # 📄 固定スキャン
+        if scan_items:
+            blocks.append({"type": "divider"})
             blocks.append({
                 "type": "section",
-                "text": {"type": "mrkdwn", "text": label},
-                "accessory": {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "削除"},
-                    "style": "danger",
-                    "action_id": "delete_reminder_item",
-                    "value": str(item["row_num"])
-                }
+                "text": {"type": "mrkdwn", "text": "*📄 固定スキャン*"}
             })
-
-        # ③ 固定スキャン
-        blocks.append({"type": "divider"})
-        blocks.append({
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": "*③ 固定スキャン*"}
-        })
-
-        if not fixed_items:
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": "_項目なし_"}
-            })
-
-        for item in fixed_items:
-            label = f"*{item['name']}*"
-            if item["notes"]:
-                label += f"\n備考: {item['notes']}"
-
-            blocks.append({
-                "type": "section",
-                "text": {"type": "mrkdwn", "text": label},
-                "accessory": {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "削除"},
-                    "style": "danger",
-                    "action_id": "delete_reminder_item",
-                    "value": str(item["row_num"])
-                }
-            })
+            for item in scan_items:
+                label = f"*{item['name']}*"
+                if item["notes"]:
+                    label += f"（{item['notes']}）"
+                blocks.append({
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": label},
+                    "accessory": {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "削除"},
+                        "style": "danger",
+                        "action_id": "delete_email_rule",
+                        "value": str(item["row_num"])
+                    }
+                })
 
         blocks.append({"type": "divider"})
         blocks.append({
@@ -748,9 +613,9 @@ def _list_subscriptions(ack, respond, body, client):
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "➕ リマインド項目を追加"},
+                    "text": {"type": "plain_text", "text": "➕ 項目を追加"},
                     "style": "primary",
-                    "action_id": "open_add_reminder_item_modal"
+                    "action_id": "open_add_email_rule_modal"
                 }
             ]
         })
@@ -758,7 +623,7 @@ def _list_subscriptions(ack, respond, body, client):
         client.chat_postMessage(
             channel=user_id,
             blocks=blocks,
-            text="📧 ルール一覧 / 📋 リマインド項目"
+            text="📋 取得ルール一覧"
         )
 
     except Exception as e:
@@ -770,19 +635,21 @@ def _list_subscriptions(ack, respond, body, client):
 
 @slack_app.action("delete_email_rule")
 def handle_delete_email_rule(ack, body, client):
-    """メール取得ルールを削除"""
+    """取得ルールを削除（is_active=falseに設定）"""
     ack()
 
     row_num = body["actions"][0]["value"]
     user_id = body["user"]["id"]
 
     try:
-        from api.services.invoice_fetcher import invoice_fetcher
+        sheets, spreadsheet_id = _get_email_rules_sheets()
 
-        # 該当行をクリア
-        invoice_fetcher.sheets.spreadsheets().values().clear(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range=f"email_rules!A{row_num}:E{row_num}"
+        # is_activeをfalseに更新（列I = 9番目）
+        sheets.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"subscriptions!I{row_num}",
+            valueInputOption="RAW",
+            body={"values": [["false"]]}
         ).execute()
 
         client.chat_postMessage(
@@ -1919,83 +1786,147 @@ def cron_fetch_invoices():
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
 
 
-# === Reminder Items Management (②手動取得 / ③固定スキャン) ===
+# === Email Rules Management (メール自動取得 / 手動確認 / スキャン) ===
 
 
-def _get_reminder_items_sheets():
-    """reminder_items シートのAPIアクセスを取得"""
+def _get_email_rules_sheets():
+    """subscriptions シートのAPIアクセスを取得"""
     from api.services.invoice_fetcher import invoice_fetcher
     return invoice_fetcher.sheets, invoice_fetcher.spreadsheet_id
 
 
-def _read_reminder_items():
-    """reminder_items シートからアクティブな項目を読み取る"""
-    sheets, spreadsheet_id = _get_reminder_items_sheets()
+def _read_email_rules():
+    """subscriptions シートからアクティブな項目を読み取る
+
+    カラム: A:name, B:category, C:sender_email, D:subject_pattern,
+            E:fetch_type, F:url, G:notes, H:link_selector, I:is_active
+    """
+    sheets, spreadsheet_id = _get_email_rules_sheets()
     result = sheets.spreadsheets().values().get(
         spreadsheetId=spreadsheet_id,
-        range="reminder_items!A2:G100"
+        range="subscriptions!A2:I100"
     ).execute()
     rows = result.get("values", [])
     items = []
     for i, row in enumerate(rows):
-        if len(row) < 6:
+        if len(row) < 1 or not row[0]:
             continue
-        is_active = row[5].lower() == "true" if len(row) > 5 and row[5] else True
+        # 列I (index 8) = is_active
+        is_active = row[8].lower() == "true" if len(row) > 8 and row[8] else True
         if not is_active:
             continue
         items.append({
             "row_num": i + 2,
-            "id": row[0] if len(row) > 0 else "",
-            "name": row[1] if len(row) > 1 else "",
-            "category": row[2] if len(row) > 2 else "manual",
-            "notes": row[3] if len(row) > 3 else "",
-            "url": row[4] if len(row) > 4 else "",
+            "name": row[0] if len(row) > 0 else "",              # A
+            "category": row[1] if len(row) > 1 else "email",     # B
+            "sender_email": row[2] if len(row) > 2 else "",      # C
+            "subject_pattern": row[3] if len(row) > 3 else "",   # D
+            "fetch_type": row[4] if len(row) > 4 else "attachment",  # E
+            "url": row[5] if len(row) > 5 else "",               # F
+            "notes": row[6] if len(row) > 6 else "",             # G
         })
     return items
 
 
-# モーダル定義
-_ADD_REMINDER_ITEM_MODAL_VIEW = {
-    "type": "modal",
-    "callback_id": "add_reminder_item_modal",
-    "title": {"type": "plain_text", "text": "リマインド項目追加"},
-    "submit": {"type": "plain_text", "text": "追加"},
-    "close": {"type": "plain_text", "text": "キャンセル"},
-    "blocks": [
-        {
-            "type": "input",
-            "block_id": "name_block",
-            "label": {"type": "plain_text", "text": "項目名"},
-            "element": {
-                "type": "plain_text_input",
-                "action_id": "name_input",
-                "placeholder": {"type": "plain_text", "text": "例: Microsoft365, UQmobile"}
-            }
-        },
-        {
-            "type": "input",
-            "block_id": "category_block",
-            "label": {"type": "plain_text", "text": "カテゴリ"},
-            "element": {
-                "type": "static_select",
-                "action_id": "category_select",
-                "options": [
-                    {
-                        "text": {"type": "plain_text", "text": "② 手動取得項目"},
-                        "value": "manual"
-                    },
-                    {
-                        "text": {"type": "plain_text", "text": "③ 固定スキャン"},
-                        "value": "fixed_scan"
-                    }
-                ],
-                "initial_option": {
-                    "text": {"type": "plain_text", "text": "② 手動取得項目"},
-                    "value": "manual"
+def _build_add_email_rule_modal_view(selected_category="email"):
+    """カテゴリに応じた取得ルール追加モーダルを構築"""
+    category_block = {
+        "type": "input",
+        "block_id": "category_block",
+        "dispatch_action": True,
+        "label": {"type": "plain_text", "text": "種別"},
+        "element": {
+            "type": "static_select",
+            "action_id": "rule_category_select",
+            "initial_option": {
+                "email": {"text": {"type": "plain_text", "text": "メールで自動取得"}, "value": "email"},
+                "manual": {"text": {"type": "plain_text", "text": "手動確認"}, "value": "manual"},
+                "scan": {"text": {"type": "plain_text", "text": "スキャン"}, "value": "scan"},
+            }[selected_category],
+            "options": [
+                {"text": {"type": "plain_text", "text": "メールで自動取得"}, "value": "email"},
+                {"text": {"type": "plain_text", "text": "手動確認"}, "value": "manual"},
+                {"text": {"type": "plain_text", "text": "スキャン"}, "value": "scan"},
+            ]
+        }
+    }
+
+    name_block = {
+        "type": "input",
+        "block_id": "name_block",
+        "label": {"type": "plain_text", "text": "名前"},
+        "element": {
+            "type": "plain_text_input",
+            "action_id": "name_input",
+            "placeholder": {"type": "plain_text", "text": "例: AWS"}
+        }
+    }
+
+    blocks = [category_block, name_block]
+
+    if selected_category == "email":
+        blocks.extend([
+            {
+                "type": "input",
+                "block_id": "sender_email_block",
+                "label": {"type": "plain_text", "text": "送信元メールアドレス"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "sender_email_input",
+                    "placeholder": {"type": "plain_text", "text": "例: billing@example.com"}
                 }
-            }
-        },
-        {
+            },
+            {
+                "type": "input",
+                "block_id": "subject_block",
+                "label": {"type": "plain_text", "text": "件名パターン"},
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "subject_input",
+                    "placeholder": {"type": "plain_text", "text": "例: 請求書"}
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "fetch_type_block",
+                "label": {"type": "plain_text", "text": "タイプ"},
+                "element": {
+                    "type": "static_select",
+                    "action_id": "fetch_type_select",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": "添付PDF"}, "value": "attachment"},
+                        {"text": {"type": "plain_text", "text": "リンク"}, "value": "link"},
+                    ]
+                }
+            },
+        ])
+    elif selected_category == "manual":
+        blocks.extend([
+            {
+                "type": "input",
+                "block_id": "url_block",
+                "label": {"type": "plain_text", "text": "確認先URL"},
+                "optional": True,
+                "element": {
+                    "type": "url_text_input",
+                    "action_id": "url_input",
+                    "placeholder": {"type": "plain_text", "text": "例: https://portal.office.com/"}
+                }
+            },
+            {
+                "type": "input",
+                "block_id": "notes_block",
+                "label": {"type": "plain_text", "text": "備考"},
+                "optional": True,
+                "element": {
+                    "type": "plain_text_input",
+                    "action_id": "notes_input",
+                    "placeholder": {"type": "plain_text", "text": "例: ログイン後マイページから取得"}
+                }
+            },
+        ])
+    elif selected_category == "scan":
+        blocks.append({
             "type": "input",
             "block_id": "notes_block",
             "label": {"type": "plain_text", "text": "備考"},
@@ -2003,104 +1934,98 @@ _ADD_REMINDER_ITEM_MODAL_VIEW = {
             "element": {
                 "type": "plain_text_input",
                 "action_id": "notes_input",
-                "placeholder": {"type": "plain_text", "text": "例: 2026年6月まで, 解約中"}
+                "placeholder": {"type": "plain_text", "text": "例: 毎月届く紙の領収書"}
             }
-        },
-        {
-            "type": "input",
-            "block_id": "url_block",
-            "label": {"type": "plain_text", "text": "URL（手動取得項目のみ）"},
-            "optional": True,
-            "element": {
-                "type": "url_text_input",
-                "action_id": "url_input",
-                "placeholder": {"type": "plain_text", "text": "例: https://portal.office.com/"}
-            }
-        }
-    ]
-}
+        })
+
+    return {
+        "type": "modal",
+        "callback_id": "add_email_rule_modal",
+        "title": {"type": "plain_text", "text": "取得ルール追加"},
+        "submit": {"type": "plain_text", "text": "追加"},
+        "close": {"type": "plain_text", "text": "キャンセル"},
+        "blocks": blocks
+    }
 
 
-@slack_app.action("open_add_reminder_item_modal")
-def handle_open_add_reminder_item_modal(ack, body, client):
-    """リマインド項目追加モーダルを開く"""
+@slack_app.action("open_add_email_rule_modal")
+def handle_open_add_email_rule_modal(ack, body, client):
+    """取得ルール追加モーダルを開く"""
     ack()
     try:
         client.views_open(
             trigger_id=body["trigger_id"],
-            view=_ADD_REMINDER_ITEM_MODAL_VIEW,
+            view=_build_add_email_rule_modal_view("email"),
         )
     except Exception as e:
-        print(f"[reminder_items] Failed to open modal: {e}")
+        print(f"[email_rules] Failed to open modal: {e}")
 
 
-@slack_app.view("add_reminder_item_modal")
-def handle_add_reminder_item_submission(ack, body, client, view):
-    """リマインド項目追加の処理"""
+@slack_app.action("rule_category_select")
+def handle_rule_category_select(ack, body, client):
+    """種別変更時にモーダルを動的に更新"""
+    ack()
+    selected_category = body["actions"][0]["selected_option"]["value"]
+    view_id = body["view"]["id"]
+    client.views_update(
+        view_id=view_id,
+        view=_build_add_email_rule_modal_view(selected_category)
+    )
+
+
+@slack_app.view("add_email_rule_modal")
+def handle_add_email_rule_submission(ack, body, client, view):
+    """取得ルール追加の処理"""
     ack()
 
     try:
         values = view["state"]["values"]
         name = values["name_block"]["name_input"]["value"]
-        category = values["category_block"]["category_select"]["selected_option"]["value"]
-        notes = values["notes_block"]["notes_input"].get("value") or ""
-        url = values["url_block"]["url_input"].get("value") or ""
+        category = values["category_block"]["rule_category_select"]["selected_option"]["value"]
 
-        import uuid
-        item_id = str(uuid.uuid4())
-        now = datetime.now().isoformat()
+        # カテゴリ別フィールドの取得
+        sender_email = ""
+        subject_pattern = ""
+        fetch_type = "attachment"
+        url = ""
+        notes = ""
 
-        sheets, spreadsheet_id = _get_reminder_items_sheets()
+        if category == "email":
+            sender_email = values["sender_email_block"]["sender_email_input"]["value"]
+            subject_pattern = values["subject_block"]["subject_input"]["value"]
+            fetch_type = values["fetch_type_block"]["fetch_type_select"]["selected_option"]["value"]
+        elif category == "manual":
+            url = values.get("url_block", {}).get("url_input", {}).get("value") or ""
+            notes = values.get("notes_block", {}).get("notes_input", {}).get("value") or ""
+        elif category == "scan":
+            notes = values.get("notes_block", {}).get("notes_input", {}).get("value") or ""
+
+        sheets, spreadsheet_id = _get_email_rules_sheets()
+        # 列順: name(A), category(B), sender_email(C), subject_pattern(D),
+        #       fetch_type(E), url(F), notes(G), link_selector(H), is_active(I)
         sheets.spreadsheets().values().append(
             spreadsheetId=spreadsheet_id,
-            range="reminder_items!A:G",
+            range="subscriptions!A:I",
             valueInputOption="USER_ENTERED",
-            body={"values": [[item_id, name, category, notes, url, "true", now]]}
+            body={"values": [[name, category, sender_email, subject_pattern, fetch_type, url, notes, "", "true"]]}
         ).execute()
 
         user_id = body["user"]["id"]
-        category_label = "手動取得項目" if category == "manual" else "固定スキャン"
+        category_labels = {
+            "email": "📧 メールで自動取得",
+            "manual": "✋ 手動確認",
+            "scan": "📄 スキャン",
+        }
         client.chat_postMessage(
             channel=user_id,
-            text=f"✅ リマインド項目を追加しました: *{name}*（{category_label}）\n`/accounting-subscriptions` で確認できます。"
+            text=f"✅ 取得ルールを追加しました: *{name}*（{category_labels.get(category, category)}）\n`/accounting-subscriptions` で確認できます。"
         )
 
     except Exception as e:
         user_id = body["user"]["id"]
         client.chat_postMessage(
             channel=user_id,
-            text=f"❌ 項目の追加に失敗しました: {str(e)}"
-        )
-
-
-@slack_app.action("delete_reminder_item")
-def handle_delete_reminder_item(ack, body, client):
-    """リマインド項目を削除"""
-    ack()
-
-    row_num = body["actions"][0]["value"]
-    user_id = body["user"]["id"]
-
-    try:
-        sheets, spreadsheet_id = _get_reminder_items_sheets()
-
-        # is_activeをfalseに更新（列F = 6番目）
-        sheets.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=f"reminder_items!F{row_num}",
-            valueInputOption="RAW",
-            body={"values": [["false"]]}
-        ).execute()
-
-        client.chat_postMessage(
-            channel=user_id,
-            text="✅ 項目を削除しました。`/accounting-subscriptions` で確認してください。"
-        )
-
-    except Exception as e:
-        client.chat_postMessage(
-            channel=user_id,
-            text=f"❌ 削除に失敗しました: {str(e)}"
+            text=f"❌ 追加に失敗しました: {str(e)}"
         )
 
 
