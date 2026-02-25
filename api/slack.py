@@ -44,7 +44,7 @@ def handle_help(ack, respond):
 • `/accounting-reconcile [期間]` - CSV照会を実行
 • `/accounting-share [期間]` - 税理士さんに請求書を共有
 • `/accounting-generate-hellotrunk [期間]` - ハロートランク請求書を手動生成
-• `/accounting-diagnose` - Google Drive アクセス診断
+
 
 *期間指定の例:*
 • `202602` - 2026年2月分のみ
@@ -64,99 +64,6 @@ def handle_help(ack, respond):
 └── 📁 202602_銀行振込/"""
     })
 
-
-@slack_app.command("/accounting-diagnose")
-def handle_diagnose(ack, respond):
-    """Google Drive アクセス診断"""
-    ack()
-    try:
-        from api.services.invoice_fetcher import get_google_credentials
-        from googleapiclient.discovery import build
-
-        lines = ["*🔍 Google Drive アクセス診断*\n"]
-
-        # 1. サービスアカウント情報
-        creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
-        if creds_json:
-            creds_dict = json.loads(creds_json)
-            client_email = creds_dict.get("client_email", "(不明)")
-            client_id = creds_dict.get("client_id", "(不明)")
-            lines.append(f"*1. サービスアカウント:*")
-            lines.append(f"  `client_email`: `{client_email}`")
-            lines.append(f"  `client_id`: `{client_id}`")
-        else:
-            lines.append("*1.* ❌ `GOOGLE_CREDENTIALS_JSON` 未設定")
-
-        # 2. GOOGLE_DELEGATE_EMAIL
-        delegate_email = os.environ.get("GOOGLE_DELEGATE_EMAIL", "")
-        gmail_emails = os.environ.get("GMAIL_USER_EMAILS", "") or os.environ.get("GMAIL_USER_EMAIL", "")
-        lines.append(f"\n*2. 委任設定:*")
-        if delegate_email:
-            lines.append(f"  `GOOGLE_DELEGATE_EMAIL`: ✅ `{delegate_email}`")
-        else:
-            lines.append(f"  `GOOGLE_DELEGATE_EMAIL`: ⚠️ 未設定")
-        lines.append(f"  `GMAIL_USER_EMAIL(S)`: `{gmail_emails or '(未設定)'}`")
-
-        # 3. フォルダ ID
-        drive_folder = os.environ.get("GOOGLE_DRIVE_FOLDER_ID", "")
-        card_folder = os.environ.get("ACCOUNTANT_CARD_FOLDER_ID", "")
-        bank_folder = os.environ.get("ACCOUNTANT_BANK_FOLDER_ID", "")
-        lines.append(f"\n*3. フォルダ ID:*")
-        lines.append(f"  `GOOGLE_DRIVE_FOLDER_ID`: `{drive_folder or '(未設定)'}`")
-        lines.append(f"  `ACCOUNTANT_CARD_FOLDER_ID`: `{card_folder or '(未設定)'}`")
-        lines.append(f"  `ACCOUNTANT_BANK_FOLDER_ID`: `{bank_folder or '(未設定)'}`")
-
-        # 4. アクセステスト
-        lines.append(f"\n*4. アクセステスト:*")
-        scopes = ["https://www.googleapis.com/auth/drive"]
-        credentials = get_google_credentials(scopes)
-        service = build("drive", "v3", credentials=credentials)
-
-        test_folders = [
-            ("メインフォルダ", drive_folder),
-            ("税理士カードフォルダ", card_folder),
-            ("税理士銀行フォルダ", bank_folder),
-        ]
-
-        for label, folder_id in test_folders:
-            if not folder_id:
-                lines.append(f"  {label}: ⏭️ ID 未設定")
-                continue
-            try:
-                result = service.files().get(
-                    fileId=folder_id,
-                    fields="id, name",
-                    supportsAllDrives=True
-                ).execute()
-                name = result.get("name", "?")
-                lines.append(f"  {label}: ✅ `{name}`")
-            except Exception as e:
-                err = str(e)
-                if "404" in err:
-                    lines.append(f"  {label}: ❌ 404 Not Found")
-                elif "403" in err:
-                    lines.append(f"  {label}: ❌ 403 権限不足")
-                else:
-                    lines.append(f"  {label}: ❌ `{err[:100]}`")
-
-        # 5. ヒント
-        lines.append(f"\n*💡 税理士フォルダが ❌ の場合:*")
-        if delegate_email:
-            lines.append(f"  → ドメイン全体の委任が未設定の可能性あり")
-            lines.append(f"  → または `{client_email}` を共有ドライブのメンバーに追加")
-        else:
-            lines.append(f"  方法1: `{client_email}` を共有ドライブのメンバーに追加")
-            lines.append(f"  方法2: `GOOGLE_DELEGATE_EMAIL` を設定してドメイン委任を利用")
-
-        respond({
-            "response_type": "ephemeral",
-            "text": "\n".join(lines)
-        })
-    except Exception as e:
-        respond({
-            "response_type": "ephemeral",
-            "text": f"❌ 診断中にエラー: {str(e)}\n```{traceback.format_exc()[-500:]}```"
-        })
 
 
 @slack_app.command("/accounting-status")
