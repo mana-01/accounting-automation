@@ -60,6 +60,7 @@ class Subscription:
     fetch_method: FetchMethod = FetchMethod.MANUAL
     file_naming: FileNamingRule = FileNamingRule.RENAME  # ファイル命名ルール
     email_subject: Optional[str] = None  # メール件名パターン
+    sender_email: Optional[str] = None  # 送信者メールアドレス
     login_url: Optional[str] = None
     is_active: bool = True
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
@@ -80,6 +81,7 @@ class Subscription:
             self.fetch_method.value,
             self.file_naming.value,
             self.email_subject or "",
+            self.sender_email or "",
             self.login_url or "",
             str(self.is_active),
             self.created_at,
@@ -101,10 +103,11 @@ class Subscription:
             fetch_method=FetchMethod(row[8]) if row[8] else FetchMethod.MANUAL,
             file_naming=FileNamingRule(row[9]) if len(row) > 9 and row[9] and row[9] in ("rename", "original") else FileNamingRule.RENAME,
             email_subject=row[10] if len(row) > 10 and row[10] else None,
-            login_url=row[11] if len(row) > 11 and row[11] else None,
-            is_active=row[12].lower() == "true" if len(row) > 12 and row[12] else True,
-            created_at=row[13] if len(row) > 13 else datetime.now().isoformat(),
-            updated_at=row[14] if len(row) > 14 else datetime.now().isoformat(),
+            sender_email=row[11] if len(row) > 11 and row[11] else None,
+            login_url=row[12] if len(row) > 12 and row[12] else None,
+            is_active=row[13].lower() == "true" if len(row) > 13 and row[13] else True,
+            created_at=row[14] if len(row) > 14 else datetime.now().isoformat(),
+            updated_at=row[15] if len(row) > 15 else datetime.now().isoformat(),
         )
 
 
@@ -294,7 +297,7 @@ SHEET_HEADERS = {
     "subscription_master": [
         "id", "name", "vendor", "amount", "currency", "billing_day",
         "billing_cycle", "payment_method", "fetch_method", "file_naming",
-        "email_subject", "login_url", "is_active", "created_at", "updated_at"
+        "email_subject", "sender_email", "login_url", "is_active", "created_at", "updated_at"
     ],
     "invoices": [
         "id", "subscription_id", "subscription_name", "amount", "currency",
