@@ -1025,7 +1025,8 @@ def _save_invoice_pdf(body, client, invoice_type: str):
 
     try:
         from api.services.invoice_fetcher import (
-            invoice_fetcher, extract_invoice_data_with_gemini, format_invoice_filename
+            invoice_fetcher, extract_invoice_data_with_gemini, format_invoice_filename,
+            parse_invoice_filename
         )
 
         # ファイル情報を取得
@@ -1056,14 +1057,26 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             status = response.status_code if response else "no response"
             raise Exception(f"ファイルのダウンロードに失敗しました: {last_error or f'status={status}'}")
 
-        # Gemini APIで請求書データを抽出
-        pdf_info = extract_invoice_data_with_gemini(response.content)
-        amount = pdf_info.get("amount")
-        # ベンダー名: Gemini結果 → 元のSlackファイル名（拡張子除去）→ フォールバック
-        original_name_stem = re.sub(r'\.[^.]+$', '', original_filename).strip() if original_filename else ""
-        vendor = pdf_info.get("vendor") or original_name_stem or "手動アップロード"
         now = datetime.now()
-        inv_date = pdf_info.get("date") or now.strftime("%Y-%m-%d")
+
+        # 方法1: ファイル名が {日付}_{名前}_{金額}.pdf のルールに合致すればそのまま使用
+        parsed = parse_invoice_filename(original_filename) if original_filename else {}
+
+        if parsed.get("date") and parsed.get("amount"):
+            # ファイル名から日付・金額・ベンダーが取れた → Gemini不要
+            amount = parsed["amount"]
+            vendor = parsed.get("vendor") or "手動アップロード"
+            inv_date = parsed["date"]
+            pdf_info = {"amount": amount, "vendor": vendor, "date": inv_date, "summary": None}
+            print(f"[save_invoice_pdf] Filename parse OK: date={inv_date}, amount={amount}, vendor={vendor}")
+        else:
+            # 方法2: ファイル名がルールに合致しない → Gemini解析にフォールバック
+            pdf_info = extract_invoice_data_with_gemini(response.content)
+            amount = pdf_info.get("amount")
+            # ベンダー名: Gemini結果 → 元のSlackファイル名（拡張子除去）→ フォールバック
+            original_name_stem = re.sub(r'\.[^.]+$', '', original_filename).strip() if original_filename else ""
+            vendor = pdf_info.get("vendor") or original_name_stem or "手動アップロード"
+            inv_date = pdf_info.get("date") or now.strftime("%Y-%m-%d")
 
         # 期間を計算
         period_code = f"{now.year}{now.month:02d}"
