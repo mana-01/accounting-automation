@@ -1078,8 +1078,12 @@ def _save_invoice_pdf(body, client, invoice_type: str):
             vendor = pdf_info.get("vendor") or original_name_stem or "手動アップロード"
             inv_date = pdf_info.get("date") or now.strftime("%Y-%m-%d")
 
-        # 期間を計算
-        period_code = f"{now.year}{now.month:02d}"
+        # 期間を計算（請求日ベース）
+        try:
+            inv_dt = datetime.strptime(inv_date, "%Y-%m-%d")
+            period_code = f"{inv_dt.year}{inv_dt.month:02d}"
+        except (ValueError, TypeError):
+            period_code = f"{now.year}{now.month:02d}"
 
         # 命名ルールでファイル名を生成してGoogle Driveに保存
         filename = format_invoice_filename(inv_date, vendor, amount)
