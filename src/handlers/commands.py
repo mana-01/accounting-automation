@@ -468,16 +468,21 @@ def register_commands(app: App):
             # Chatworkで税理士さんに通知
             chatwork_notified = False
             try:
-                cw_result = chatwork_service.notify_accounting_share_complete(
-                    period=period,
-                    card_count=share_result["card_count"],
-                    bank_count=share_result["bank_count"],
-                    card_folder_url=share_result.get("card_folder_url", ""),
-                    bank_folder_url=share_result.get("bank_folder_url", ""),
-                )
-                if cw_result is not None:
-                    chatwork_notified = True
-                    result_lines.append("\n💬 Chatworkで税理士さんに通知しました。")
+                if not chatwork_service._is_configured():
+                    result_lines.append(
+                        "\n⚠️ Chatwork通知がスキップされました（CHATWORK_API_TOKEN / CHATWORK_ROOM_ID が未設定です）"
+                    )
+                else:
+                    cw_result = chatwork_service.notify_accounting_share_complete(
+                        period=period,
+                        card_count=share_result["card_count"],
+                        bank_count=share_result["bank_count"],
+                        card_folder_url=share_result.get("card_folder_url", ""),
+                        bank_folder_url=share_result.get("bank_folder_url", ""),
+                    )
+                    if cw_result is not None:
+                        chatwork_notified = True
+                        result_lines.append("\n💬 Chatworkで税理士さんに通知しました。")
             except Exception as cw_err:
                 result_lines.append(f"\n⚠️ Chatwork通知に失敗しました: {cw_err}")
 

@@ -10,9 +10,20 @@ class ChatworkService:
     BASE_URL = "https://api.chatwork.com/v2"
 
     def __init__(self):
-        self.api_token = os.getenv("CHATWORK_API_TOKEN", "")
-        self.room_id = os.getenv("CHATWORK_ROOM_ID", "")
-        self.accountant_account_id = os.getenv("CHATWORK_ACCOUNTANT_ACCOUNT_ID", "")
+        # 環境変数はプロパティで都度読み込む（インポート時の未ロード問題を回避）
+        pass
+
+    @property
+    def api_token(self) -> str:
+        return os.getenv("CHATWORK_API_TOKEN", "")
+
+    @property
+    def room_id(self) -> str:
+        return os.getenv("CHATWORK_ROOM_ID", "")
+
+    @property
+    def accountant_account_id(self) -> str:
+        return os.getenv("CHATWORK_ACCOUNTANT_ACCOUNT_ID", "")
 
     def _is_configured(self) -> bool:
         """Chatwork通知が設定されているか確認"""
