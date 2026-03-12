@@ -233,13 +233,13 @@ class SpreadsheetService:
 
     # ===== CSV Transaction methods =====
 
-    def get_existing_csv_transactions(self) -> set[tuple[str, str, str]]:
-        """既存のCSV取引キー (date, description, amount) のセットを返す"""
+    def get_existing_csv_transactions(self) -> set[tuple[str, str]]:
+        """既存のCSV取引キー (date, description) のセットを返す"""
         rows = self._read_sheet(SHEET_NAMES["CSV_TRANSACTIONS"])
         keys = set()
         for row in rows:
-            if row and len(row) >= 3:
-                keys.add((row[0], row[1], row[2]))
+            if row and len(row) >= 2:
+                keys.add((row[0], row[1]))
         return keys
 
     def save_csv_transactions(self, transactions: list[Transaction]) -> None:
@@ -254,11 +254,11 @@ class SpreadsheetService:
             self._append_rows(SHEET_NAMES["CSV_TRANSACTIONS"], rows)
 
     def filter_new_transactions(self, transactions: list[Transaction]) -> list[Transaction]:
-        """既存の取引と重複しないものだけを返す"""
+        """既存の取引と重複しないものだけを返す（日付+説明で判定）"""
         existing_keys = self.get_existing_csv_transactions()
         new_transactions = []
         for tx in transactions:
-            key = (tx.date, tx.description, str(tx.amount))
+            key = (tx.date, tx.description)
             if key not in existing_keys:
                 new_transactions.append(tx)
         return new_transactions
