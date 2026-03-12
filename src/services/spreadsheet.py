@@ -10,6 +10,7 @@ from ..models import (
     Subscription,
     SubscriptionRule,
     Invoice,
+    Transaction,
     ReconciliationResult,
     SHEET_NAMES,
     SHEET_HEADERS,
@@ -229,6 +230,38 @@ class SpreadsheetService:
                 self._update_row(SHEET_NAMES["INVOICES"], i, invoice.to_row())
                 return
         raise ValueError(f"Invoice not found: {invoice_id}")
+
+    # ===== CSV Transaction methods =====
+
+    def get_existing_csv_transactions(self) -> set[tuple[str, str]]:
+        """既存のCSV取引キー (date, description) のセットを返す"""
+        rows = self._read_sheet(SHEET_NAMES["CSV_TRANSACTIONS"])
+        keys = set()
+        for row in rows:
+            if row and len(row) >= 2:
+                keys.add((row[0], row[1]))
+        return keys
+
+    def save_csv_transactions(self, transactions: list[Transaction]) -> None:
+        """CSV取引をスプレッドシートに保存"""
+        from datetime import datetime
+        now = datetime.now().isoformat()
+        rows = [
+            [tx.date, tx.description, str(tx.amount), tx.transaction_type, now]
+            for tx in transactions
+        ]
+        if rows:
+            self._append_rows(SHEET_NAMES["CSV_TRANSACTIONS"], rows)
+
+    def filter_new_transactions(self, transactions: list[Transaction]) -> list[Transaction]:
+        """既存の取引と重複しないものだけを返す（日付+説明で判定）"""
+        existing_keys = self.get_existing_csv_transactions()
+        new_transactions = []
+        for tx in transactions:
+            key = (tx.date, tx.description)
+            if key not in existing_keys:
+                new_transactions.append(tx)
+        return new_transactions
 
     # ===== Reconciliation methods =====
 

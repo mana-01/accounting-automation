@@ -248,6 +248,7 @@ class ReconciliationResult:
     matched_count: int
     unmatched_count: int
     missing_invoices: list[MissingInvoice] = field(default_factory=list)
+    skipped_count: int = 0  # 重複スキップ数
     status: ReconciliationStatus = ReconciliationStatus.PENDING_INVOICES
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -279,6 +280,7 @@ SHEET_NAMES = {
     "SUBSCRIPTION_MASTER": "subscription_master",  # サブスク定義（金額・支払方法等）
     "INVOICES": "invoices",
     "RECONCILIATION_HISTORY": "reconciliation_history",
+    "CSV_TRANSACTIONS": "csv_transactions",      # CSV取引履歴（重複防止用）
     "SETTINGS": "settings",
 }
 
@@ -312,5 +314,8 @@ SHEET_HEADERS = {
     "reconciliation_history": [
         "id", "reconciliation_date", "period", "total_transactions",
         "matched_count", "unmatched_count", "missing_invoices_json", "status", "created_at"
+    ],
+    "csv_transactions": [
+        "date", "description", "amount", "transaction_type", "created_at"
     ],
 }

@@ -28,10 +28,14 @@ class ReconciliationService:
         transactions: list[Transaction],
         period: Optional[str] = None
     ) -> ReconciliationResult:
-        """取引明細と請求書・サブスクを照会"""
+        """取引明細と請求書・サブスクを照会（重複取引は自動スキップ）"""
 
         if not period:
             period = spreadsheet_service.get_current_period()
+
+        # 重複チェック: 既存取引を除外して差分のみ処理
+        new_transactions = spreadsheet_service.filter_new_transactions(transactions)
+        skipped_count = len(transactions) - len(new_transactions)
 
         # データを取得
         subscriptions = spreadsheet_service.get_subscriptions(active_only=True)
@@ -42,7 +46,7 @@ class ReconciliationService:
         unmatched_transactions: list[Transaction] = []
         missing_invoices: list[MissingInvoice] = []
 
-        for tx in transactions:
+        for tx in new_transactions:
             match_result = self._find_match(tx, subscriptions, invoices)
 
             if match_result:
@@ -71,15 +75,20 @@ class ReconciliationService:
                     status="pending"
                 ))
 
+        # 新規取引をスプレッドシートに記録（次回以降の重複防止）
+        if new_transactions:
+            spreadsheet_service.save_csv_transactions(new_transactions)
+
         # 結果を作成
         result = ReconciliationResult(
             id=str(uuid.uuid4()),
             reconciliation_date=datetime.now().strftime("%Y-%m-%d"),
             period=period,
-            total_transactions=len(transactions),
+            total_transactions=len(new_transactions),
             matched_count=matched_count,
             unmatched_count=len(unmatched_transactions),
             missing_invoices=missing_invoices,
+            skipped_count=skipped_count,
             status=(
                 ReconciliationStatus.COMPLETED
                 if not missing_invoices
@@ -88,8 +97,9 @@ class ReconciliationService:
             created_at=datetime.now().isoformat()
         )
 
-        # 結果を保存
-        spreadsheet_service.save_reconciliation_result(result)
+        # 結果を保存（新規取引がある場合のみ）
+        if new_transactions:
+            spreadsheet_service.save_reconciliation_result(result)
 
         return result
 
