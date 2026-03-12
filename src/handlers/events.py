@@ -64,7 +64,23 @@ def register_events(app: App):
                 try:
                     result = reconciliation_service.reconcile(transactions)
 
+                    # 全件スキップ（全て既存の取引）の場合
+                    if result.skipped_count > 0 and result.total_transactions == 0:
+                        say(
+                            channel=channel_id,
+                            text=(
+                                f"⏭️ CSVの全 {result.skipped_count} 件は既に処理済みです。"
+                                "新しい取引はありませんでした。"
+                            )
+                        )
+                        return
+
                     # 結果を報告
+                    skipped_text = (
+                        f"\n*スキップ（処理済み）:* ⏭️ {result.skipped_count}件"
+                        if result.skipped_count > 0
+                        else ""
+                    )
                     blocks = [
                         {
                             "type": "header",
@@ -76,9 +92,10 @@ def register_events(app: App):
                                 "type": "mrkdwn",
                                 "text": (
                                     f"*期間:* {result.period}\n"
-                                    f"*取引数:* {result.total_transactions}件\n"
+                                    f"*新規取引数:* {result.total_transactions}件\n"
                                     f"*マッチ:* ✅ {result.matched_count}件\n"
                                     f"*不足:* ❌ {result.unmatched_count}件"
+                                    f"{skipped_text}"
                                 )
                             }
                         }
