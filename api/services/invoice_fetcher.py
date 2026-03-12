@@ -1476,6 +1476,9 @@ class InvoiceFetcher:
                 withdraw = int(re.sub(r"[^\d]", "", withdraw_str) or "0")
 
                 if withdraw > 0 and date_str:
+                    # セゾンカード引落・手数料はスキップ
+                    if any(skip in desc for skip in ["セゾン", "手数料"]):
+                        continue
                     transactions.append({
                         "date": date_str,
                         "vendor": desc,
