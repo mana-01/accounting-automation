@@ -938,43 +938,70 @@ def _process_csv(body, client, csv_type: str):
             )
             return
 
+        # 既存の取引を取得して重複チェック（日付+説明で判定）
+        existing_result = invoice_fetcher.sheets.spreadsheets().values().get(
+            spreadsheetId=invoice_fetcher.spreadsheet_id,
+            range="csv_transactions!A2:G1000"
+        ).execute()
+        existing_rows = existing_result.get("values", [])
+        existing_keys = set()
+        for row in existing_rows:
+            if len(row) >= 4:
+                existing_keys.add((row[2], row[3]))  # (date, vendor)
+
+        # 新規取引のみフィルタリング
+        new_transactions = [
+            tx for tx in transactions
+            if (tx.get("date", ""), tx.get("vendor", "")) not in existing_keys
+        ]
+        skipped_count = len(transactions) - len(new_transactions)
+
         # Spreadsheetに保存 (csv_transactions シート)
         # カラム: uploaded_at(A), csv_type(B), date(C), vendor(D), amount(E), file_name(F), status(G)
         from datetime import datetime
-        rows = []
-        for tx in transactions:
-            rows.append([
-                datetime.now().isoformat(),
-                csv_type,
-                tx.get("date", ""),
-                tx.get("vendor", ""),
-                str(tx.get("amount", 0)),
-                file_name,
-                "pending"
-            ])
+        if new_transactions:
+            rows = []
+            for tx in new_transactions:
+                rows.append([
+                    datetime.now().isoformat(),
+                    csv_type,
+                    tx.get("date", ""),
+                    tx.get("vendor", ""),
+                    str(tx.get("amount", 0)),
+                    file_name,
+                    "pending"
+                ])
 
-        invoice_fetcher.sheets.spreadsheets().values().append(
-            spreadsheetId=invoice_fetcher.spreadsheet_id,
-            range="csv_transactions!A:G",
-            valueInputOption="USER_ENTERED",
-            body={"values": rows}
-        ).execute()
+            invoice_fetcher.sheets.spreadsheets().values().append(
+                spreadsheetId=invoice_fetcher.spreadsheet_id,
+                range="csv_transactions!A:G",
+                valueInputOption="USER_ENTERED",
+                body={"values": rows}
+            ).execute()
 
         # サマリーを表示
-        total = sum(tx.get("amount", 0) for tx in transactions)
-        vendor_list = "\n".join([f"• {tx['vendor']}: ¥{tx['amount']:,}" for tx in transactions[:10]])
+        if not new_transactions and skipped_count > 0:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"⏭️ `{file_name}` の全 {skipped_count} 件は既に処理済みです。新しい取引はありませんでした。"
+            )
+            return
+
+        total = sum(tx.get("amount", 0) for tx in new_transactions)
+        vendor_list = "\n".join([f"• {tx['vendor']}: ¥{tx['amount']:,}" for tx in new_transactions[:10]])
+        skipped_text = f"\n• スキップ（処理済み）: {skipped_count}件" if skipped_count > 0 else ""
 
         client.chat_postMessage(
             channel=channel_id,
             text=f"""✅ *{type_name}CSV処理完了*
 
 • ファイル: `{file_name}`
-• 取引件数: {len(transactions)}件
-• 合計金額: ¥{total:,}
+• 新規取引件数: {len(new_transactions)}件
+• 合計金額: ¥{total:,}{skipped_text}
 
 *取引一覧（最大10件）:*
 {vendor_list}
-{"..." if len(transactions) > 10 else ""}
+{"..." if len(new_transactions) > 10 else ""}
 
 `/accounting-reconcile 期間` で照会できます。"""
         )
