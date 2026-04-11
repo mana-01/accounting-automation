@@ -1058,15 +1058,15 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         # 方法1: ファイル名が {日付}_{名前}_{金額}.pdf のルールに合致すればそのまま使用
         parsed = parse_invoice_filename(original_filename) if original_filename else {}
 
-        if parsed.get("date") and parsed.get("amount"):
+        if parsed.get("date") and parsed.get("amount") and parsed.get("vendor"):
             # ファイル名から日付・金額・ベンダーが全て取れた → Gemini不要
             amount = parsed["amount"]
-            vendor = parsed.get("vendor") or "手動アップロード"
+            vendor = parsed["vendor"]
             inv_date = parsed["date"]
             pdf_info = {"amount": amount, "vendor": vendor, "date": inv_date, "summary": None}
             print(f"[save_invoice_pdf] Filename parse OK: date={inv_date}, amount={amount}, vendor={vendor}")
         else:
-            # 方法2: Gemini解析にフォールバック（ファイル名の部分情報があればそちらを優先）
+            # Gemini解析（ファイル名の部分情報があればそちらを優先）
             pdf_info = extract_invoice_data_with_gemini(response.content)
             amount = parsed.get("amount") or pdf_info.get("amount")
             original_name_stem = re.sub(r'\.[^.]+$', '', original_filename).strip() if original_filename else ""
