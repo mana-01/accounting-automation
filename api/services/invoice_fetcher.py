@@ -107,7 +107,7 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
             return _extract_amount_from_pdf_regex(pdf_data)
 
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash")
 
         # PDFをbase64エンコードしてGeminiに送信
         pdf_part = {
@@ -115,21 +115,43 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
             "data": pdf_data,
         }
 
-        prompt = """この請求書PDFから以下の情報をJSON形式で抽出してください。
+        prompt = """あなたは経理書類の読み取り専門AIです。
+このPDFは請求書・領収書・レシート・明細書のいずれかです。
+以下の情報をJSON形式で正確に抽出してください。
 必ず以下のJSON形式のみで回答してください。説明文は不要です。
 
-【最重要: 金額の抽出ルール】
-- "amount" には「ご請求金額」「お支払い金額」「請求金額」「合計金額」「税込合計」など、最終的な支払い総額を入れてください。
-- ⚠️ 絶対に「小計」の金額を使わないでください。「小計」と「合計」が両方ある場合は必ず「合計」の方を使ってください。
-- 「小計」「税抜金額」「消費税額」「値引き前金額」など途中の計算金額は絶対に使わないでください。
-- 複数の金額候補がある場合は、最終的な支払い合計額を選んでください。
+【金額の抽出ルール（最重要）】
+- "amount" には最終的な支払い総額（税込）を整数で入れてください。
+- 以下の優先順で金額を探してください:
+  1. 「ご請求金額」「お支払い金額」「請求金額」「合計金額」「税込合計」「領収金額」
+  2. 「Total」「Amount Due」「Grand Total」
+  3. 上記が見つからない場合、文書内で最も大きい金額（税込と思われるもの）
+- ⚠️「小計」「税抜金額」「消費税額」「値引き前金額」など途中の計算金額は絶対に使わないでください。
 - 例: 小計 10,000円 / 消費税 1,000円 / 合計 11,000円 → amount は 11000
 
+【日付の抽出ルール（重要）】
+- "date" にはこの書類に記載されている日付を入れてください。
+- 以下の優先順で探してください:
+  1. 「発行日」「請求日」「領収日」「ご利用日」「取引日」
+  2. 「Date」「Invoice Date」「Receipt Date」
+  3. 書類上部に記載された日付
+- ⚠️ 書類に記載された日付を抽出してください。今日の日付やアップロード日は使わないでください。
+- 複数の日付がある場合は、取引日・発行日を優先してください。
+
+【発行元の抽出ルール】
+- "vendor" には請求元・発行元・店舗名を入れてください。
+- ロゴ、ヘッダー、「発行者」「販売者」欄などから特定してください。
+- 会社名・屋号・店舗名のみを抽出し、住所や電話番号は含めないでください。
+
+【画像ベースPDFの場合】
+- スキャンされた書類や画像ベースのPDFの場合も、画像内のテキストを読み取って抽出してください。
+- 手書きの文字がある場合も可能な限り読み取ってください。
+
 {
-  "amount": 請求金額（税込の最終支払い総額、整数、円単位、不明ならnull）,
-  "vendor": "請求元の会社名・サービス名（不明ならnull）",
-  "date": "請求日または発行日（YYYY-MM-DD形式、不明ならnull）",
-  "summary": "請求内容の簡潔な要約（20文字以内）"
+  "amount": 支払い総額（税込、整数、円単位、不明ならnull）,
+  "vendor": "発行元の会社名・店舗名・サービス名（不明ならnull）",
+  "date": "書類に記載された日付（YYYY-MM-DD形式、不明ならnull）",
+  "summary": "内容の簡潔な要約（20文字以内）"
 }"""
 
         response = model.generate_content([prompt, pdf_part])
@@ -137,10 +159,19 @@ def extract_invoice_data_with_gemini(pdf_data: bytes) -> dict:
 
         # JSON部分を抽出（```json ... ``` で囲まれている場合に対応）
         if "```" in text:
-            text = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
-            text = text.group(1) if text else "{}"
+            match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL)
+            text = match.group(1) if match else text
 
-        data = json.loads(text)
+        # コードフェンスなしでもJSON部分を抽出
+        if not text.startswith("{"):
+            json_match = re.search(r'\{[^{}]*\}', text, re.DOTALL)
+            text = json_match.group(0) if json_match else "{}"
+
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            print(f"Failed to parse Gemini response as JSON: {text[:200]}")
+            data = {}
 
         # 金額を整数に正規化
         amount = data.get("amount")
@@ -710,7 +741,7 @@ class InvoiceFetcher:
                     return dt.strftime("%Y-%m-%d")
                 except:
                     pass
-        return datetime.now().strftime("%Y-%m-%d")
+        return ""
 
     def get_message_subject(self, message: dict) -> str:
         """メッセージの件名を取得"""
@@ -1401,6 +1432,17 @@ class InvoiceFetcher:
             _, done = downloader.next_chunk()
         return buf.getvalue()
 
+    @staticmethod
+    def _normalize_date(date_str: str) -> str:
+        """日付文字列をYYYY-MM-DD形式に正規化"""
+        date_str = date_str.strip()
+        for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%Y年%m月%d日", "%m/%d/%Y"):
+            try:
+                return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        return date_str
+
     def parse_saison_csv(self, csv_content: str) -> list[dict]:
         """SaisonカードCSVをパース"""
         transactions = []
@@ -1433,7 +1475,7 @@ class InvoiceFetcher:
 
                 if amount > 0:
                     transactions.append({
-                        "date": row[date_idx],
+                        "date": self._normalize_date(row[date_idx]),
                         "vendor": row[name_idx].strip(),
                         "amount": amount,
                         "type": "credit"
@@ -1477,7 +1519,7 @@ class InvoiceFetcher:
 
                 if withdraw > 0 and date_str:
                     transactions.append({
-                        "date": date_str,
+                        "date": self._normalize_date(date_str),
                         "vendor": desc,
                         "amount": withdraw,
                         "type": "bank"

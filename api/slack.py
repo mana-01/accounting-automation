@@ -822,40 +822,9 @@ def handle_file_shared(event, client, say):
 
 @slack_app.event("message")
 def handle_message(event, client):
-    """メッセージイベント（ファイルアップロード検知用）"""
-    # ファイル添付があるメッセージのみ処理
-    files = event.get("files")
-    if not files:
-        return
-
-    # Bot自身のメッセージは無視
-    if event.get("bot_id"):
-        return
-
-    channel_id = event.get("channel")
-    subtype = event.get("subtype", "")
-
-    print(f"message event with files: channel={channel_id}, subtype={subtype}, files={len(files)}")
-
-    for f in files:
-        file_id = f.get("id")
-        file_name = f.get("name", "")
-        file_type = f.get("filetype", "")
-
-        if not file_id:
-            continue
-
-        # CSV or PDF のみ処理
-        is_csv = file_type == "csv" or file_name.endswith(".csv")
-        is_pdf = file_type == "pdf" or file_name.endswith(".pdf")
-
-        if is_csv or is_pdf:
-            try:
-                _send_file_buttons(client, channel_id, file_id, file_name, file_type)
-            except Exception as e:
-                print(f"Error handling file in message: {e}")
-                import traceback
-                traceback.print_exc()
+    """メッセージイベント（file_sharedで処理するためファイルはスキップ）"""
+    # ファイル添付はfile_sharedイベントで処理済みのためスキップ
+    pass
 
 
 @slack_app.action("process_csv_saison")
@@ -1090,20 +1059,19 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         parsed = parse_invoice_filename(original_filename) if original_filename else {}
 
         if parsed.get("date") and parsed.get("amount"):
-            # ファイル名から日付・金額・ベンダーが取れた → Gemini不要
+            # ファイル名から日付・金額・ベンダーが全て取れた → Gemini不要
             amount = parsed["amount"]
             vendor = parsed.get("vendor") or "手動アップロード"
             inv_date = parsed["date"]
             pdf_info = {"amount": amount, "vendor": vendor, "date": inv_date, "summary": None}
             print(f"[save_invoice_pdf] Filename parse OK: date={inv_date}, amount={amount}, vendor={vendor}")
         else:
-            # 方法2: ファイル名がルールに合致しない → Gemini解析にフォールバック
+            # 方法2: Gemini解析にフォールバック（ファイル名の部分情報があればそちらを優先）
             pdf_info = extract_invoice_data_with_gemini(response.content)
-            amount = pdf_info.get("amount")
-            # ベンダー名: Gemini結果 → 元のSlackファイル名（拡張子除去）→ フォールバック
+            amount = parsed.get("amount") or pdf_info.get("amount")
             original_name_stem = re.sub(r'\.[^.]+$', '', original_filename).strip() if original_filename else ""
-            vendor = pdf_info.get("vendor") or original_name_stem or "手動アップロード"
-            inv_date = pdf_info.get("date") or now.strftime("%Y-%m-%d")
+            vendor = parsed.get("vendor") or pdf_info.get("vendor") or original_name_stem or "手動アップロード"
+            inv_date = parsed.get("date") or pdf_info.get("date") or ""
 
         # 期間を計算（請求日ベース）
         try:
@@ -1141,10 +1109,11 @@ def _save_invoice_pdf(body, client, invoice_type: str):
         amount_text = f"\n💰 金額: ¥{amount:,}" if amount else ""
         vendor_text = f"\n🏢 請求元: {vendor}" if vendor != "手動アップロード" else ""
         summary_text = f"\n📝 内容: {pdf_info.get('summary')}" if pdf_info.get("summary") else ""
+        date_warning = "\n⚠️ 日付をPDFから読み取れませんでした。シートで日付を手動入力してください。" if not inv_date else ""
         if registered:
             client.chat_postMessage(
                 channel=channel_id,
-                text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
+                text=f"✅ {type_name}請求書を保存しました！\n📄 ファイル名: `{filename}`{vendor_text}{amount_text}{summary_text}{date_warning}\n📁 <{drive_result['web_view_link']}|Google Driveで表示>"
             )
         else:
             client.chat_postMessage(
@@ -1407,8 +1376,8 @@ def handle_reconcile(ack, respond, body, client):
             matched_vendors[vendor_name]["total"] += tx.get("amount", 0)
 
         # 不足取引をベンダーごとにグルーピング（銀行・クレジット別）
-        bank_vendors = defaultdict(lambda: {"count": 0, "total": 0})
-        credit_vendors = defaultdict(lambda: {"count": 0, "total": 0})
+        bank_vendors = defaultdict(lambda: {"count": 0, "total": 0, "dates": []})
+        credit_vendors = defaultdict(lambda: {"count": 0, "total": 0, "dates": []})
         fee_count = 0
 
         for tx in reconcile_result["missing"]:
@@ -1418,13 +1387,18 @@ def handle_reconcile(ack, respond, body, client):
 
             cleaned_name = clean_vendor_name(tx["vendor"]) or tx["vendor"]
             tx_type = tx.get("type", "bank")
+            tx_date = tx.get("date", "")
 
             if tx_type in ["credit", "saison"]:
                 credit_vendors[cleaned_name]["count"] += 1
                 credit_vendors[cleaned_name]["total"] += tx.get("amount", 0)
+                if tx_date:
+                    credit_vendors[cleaned_name]["dates"].append(tx_date)
             else:
                 bank_vendors[cleaned_name]["count"] += 1
                 bank_vendors[cleaned_name]["total"] += tx.get("amount", 0)
+                if tx_date:
+                    bank_vendors[cleaned_name]["dates"].append(tx_date)
 
         # 金額でソート
         bank_sorted = sorted(bank_vendors.items(), key=lambda x: x[1]["total"], reverse=True)
@@ -1432,11 +1406,13 @@ def handle_reconcile(ack, respond, body, client):
 
         bank_list = ""
         for name, data in bank_sorted:
-            bank_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
+            dates_str = ", ".join(sorted(data["dates"])) if data["dates"] else "日付不明"
+            bank_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}（{dates_str}）"
 
         credit_list = ""
         for name, data in credit_sorted:
-            credit_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}"
+            dates_str = ", ".join(sorted(data["dates"])) if data["dates"] else "日付不明"
+            credit_list += f"\n• {name}: {data['count']}件 ¥{data['total']:,}（{dates_str}）"
 
         result_text = f"""📊 *照会結果 ({text})*
 
@@ -1814,6 +1790,141 @@ def cron_hellotrunk():
 
     except Exception as e:
         print(f"[cron/hellotrunk] Error: {e}")
+        return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
+
+
+@app.route("/api/cron/reminder", methods=["GET"])
+def cron_reminder():
+    """毎月3日にVercel Cronから呼ばれる月次リマインド通知エンドポイント"""
+    try:
+        notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+        slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+
+        now = datetime.now()
+        period = f"{now.year}年{now.month}月"
+
+        # subscriptionsシートから手動確認項目と固定スキャン項目を取得
+        sheets = _get_subscription_sheets()
+        rows = sheets.get("values", [])[1:]  # ヘッダー行を除く
+
+        manual_lines = []
+        fixed_lines = []
+        for row in rows:
+            if len(row) < 10:
+                continue
+            # is_active列の判定（subscriptionsシートのJ列 = index 9）
+            is_active = row[9].strip().upper() in ("TRUE", "1", "YES") if len(row) > 9 else False
+            if not is_active:
+                continue
+            name = row[0] if row[0] else ""
+            category = row[2] if len(row) > 2 else ""
+            notes = row[5] if len(row) > 5 else ""
+            url = row[6] if len(row) > 6 else ""
+
+            if category == "manual":
+                if url:
+                    line = f"• <{url}|{name}>"
+                else:
+                    line = f"• {name}"
+                if notes:
+                    line += f"（{notes}）"
+                manual_lines.append(line)
+            elif category == "scan":
+                line = f"• {name}"
+                if notes:
+                    line += f"（{notes}）"
+                fixed_lines.append(line)
+
+        manual_text = "\n".join(manual_lines) if manual_lines else "• _項目なし_"
+        fixed_text = "\n".join(fixed_lines) if fixed_lines else "• _項目なし_"
+
+        blocks = [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e"}
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": "今月の経理作業を開始しましょう！\nまず以下の準備をお願いします。"
+                }
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*① 参照元データ取得*\n"
+                        "それぞれの明細を取得してきてください\n"
+                        "• <https://www.saisoncard.co.jp/|クレジットカード（セゾンカード）>\n"
+                        "• <https://sso.gmo-aozora.com/corp/b2c/login|銀行（GMOあおぞらネット銀行）>"
+                    )
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*② 手動取得項目*\n{manual_text}"
+                }
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*③ 固定スキャン*\n{fixed_text}"
+                }
+            },
+            {"type": "divider"},
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": (
+                        "*流れ*\n"
+                        "☑︎ CSVを2つアップロード\n"
+                        "☑︎ `/accounting-reconcile` で足りていないものを確認\n"
+                        "☑︎ 不足分をSlackにアップロード\n"
+                        "☑︎ `/accounting-reconcile` で再確認\n"
+                        "☑︎ すべて揃ったら `/accounting-share` でエナリさんに共有"
+                    )
+                }
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": "②③の項目は `/accounting-subscriptions` で編集できます"
+                    }
+                ]
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "📊 状況を確認"},
+                        "action_id": "check_status_from_reminder"
+                    }
+                ]
+            }
+        ]
+
+        slack_client.chat_postMessage(
+            channel=notification_channel,
+            text=f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e",
+            blocks=blocks
+        )
+
+        return json.dumps({"status": "sent", "period": period}, ensure_ascii=False), 200
+
+    except Exception as e:
+        print(f"[cron/reminder] Error: {e}")
+        import traceback
+        traceback.print_exc()
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
 
 

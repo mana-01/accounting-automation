@@ -140,19 +140,19 @@ def register_actions(app: App):
 
             # 方法1: ファイル名が {日付}_{名前}_{金額}.pdf のルールに合致すればそのまま使用
             # 方法2: ルールに合致しない場合のみGemini解析で請求日・金額を抽出
-            extracted_date = datetime.now().strftime("%Y-%m-%d")
+            extracted_date = ""
             extracted_amount = ""
 
             from api.services.invoice_fetcher import parse_invoice_filename, extract_invoice_data_with_gemini
             parsed = parse_invoice_filename(file_name)
 
             if parsed.get("date") and parsed.get("amount"):
-                # ファイル名から日付・金額が取れた → Gemini不要
+                # ファイル名から日付・金額が全て取れた → Gemini不要
                 extracted_date = parsed["date"]
                 extracted_amount = str(parsed["amount"])
                 logger.info(f"Filename parse OK: date={extracted_date}, amount={extracted_amount}, vendor={parsed.get('vendor')}")
             else:
-                # ファイル名がルールに合致しない → Gemini解析にフォールバック
+                # Gemini解析にフォールバック（ファイル名の部分情報があればそちらを優先）
                 download_url = file_data.get("url_private_download")
                 if download_url:
                     headers = {"Authorization": f"Bearer {os.getenv('SLACK_BOT_TOKEN')}"}
@@ -160,12 +160,12 @@ def register_actions(app: App):
                     if dl_response.status_code == 200:
                         try:
                             pdf_info = extract_invoice_data_with_gemini(dl_response.content)
-                            if pdf_info.get("date"):
-                                extracted_date = pdf_info["date"]
-                            if pdf_info.get("amount"):
-                                extracted_amount = str(pdf_info["amount"])
+                            extracted_date = parsed.get("date") or pdf_info.get("date", "")
+                            extracted_amount = str(parsed.get("amount") or pdf_info.get("amount", ""))
                         except Exception as extract_err:
                             logger.warning(f"PDF extraction failed, using defaults: {extract_err}")
+                            extracted_date = parsed.get("date") or ""
+                            extracted_amount = str(parsed.get("amount") or "")
 
             # サブスク選択モーダルを表示
             subscriptions = spreadsheet_service.get_subscriptions(active_only=True)

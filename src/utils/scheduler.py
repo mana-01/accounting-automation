@@ -19,7 +19,7 @@ class Scheduler:
 
     def start(self):
         """スケジューラーを開始"""
-        # 毎月5日の15時にリマインドを送信
+        # 毎月5日の15時にリマインドを送信（ローカル実行用、Vercelでは/api/cron/reminderを使用）
         self.scheduler.add_job(
             self._send_monthly_reminder,
             CronTrigger(day=5, hour=15, minute=0),
