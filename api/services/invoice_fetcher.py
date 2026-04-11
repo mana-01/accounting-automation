@@ -1488,8 +1488,11 @@ class InvoiceFetcher:
 
         for row in reader:
             if len(row) > max(date_idx, name_idx, amount_idx) and row[date_idx]:
-                # 金額を数値に変換
+                # 金額を数値に変換（マイナス金額は返金のため除外）
                 amount_str = row[amount_idx] if amount_idx >= 0 else "0"
+                amount_str = amount_str.strip()
+                if amount_str.startswith("-") or amount_str.startswith("△") or amount_str.startswith("▲"):
+                    continue
                 amount = int(re.sub(r"[^\d]", "", amount_str) or "0")
 
                 if amount > 0:
@@ -1532,8 +1535,10 @@ class InvoiceFetcher:
                 date_str = row[date_idx].strip()
                 desc = row[desc_idx].strip() if desc_idx < len(row) else ""
 
-                # 出金額を取得
-                withdraw_str = row[withdraw_idx] if withdraw_idx < len(row) else "0"
+                # 出金額を取得（マイナス金額は返金のため除外）
+                withdraw_str = row[withdraw_idx].strip() if withdraw_idx < len(row) else "0"
+                if withdraw_str.startswith("-") or withdraw_str.startswith("△") or withdraw_str.startswith("▲"):
+                    continue
                 withdraw = int(re.sub(r"[^\d]", "", withdraw_str) or "0")
 
                 if withdraw > 0 and date_str:

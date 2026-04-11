@@ -113,12 +113,12 @@ class CSVParser:
                 # 説明
                 description = str(row[desc_col]).strip()
 
-                if parsed_date and amount is not None and description:
+                if parsed_date and amount is not None and amount > 0 and description:
                     transactions.append(Transaction(
                         date=parsed_date.strftime("%Y-%m-%d"),
                         description=description,
-                        amount=abs(amount),
-                        transaction_type="debit" if amount < 0 else "credit",
+                        amount=amount,
+                        transaction_type="credit",
                     ))
             except Exception as e:
                 print(f"Row parse error: {e}")
