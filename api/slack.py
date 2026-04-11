@@ -1812,8 +1812,12 @@ def _send_reminder_message(slack_client, channel: str):
     period = f"{now.year}年{now.month}月"
 
     # subscriptionsシートから手動確認項目と固定スキャン項目を取得
-    sheets = _get_subscription_sheets()
-    rows = sheets.get("values", [])[1:]  # ヘッダー行を除く
+    sheets, spreadsheet_id = _get_subscription_sheets()
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="subscriptions!A2:J100"
+    ).execute()
+    rows = result.get("values", [])
 
     manual_lines = []
     fixed_lines = []
@@ -1825,9 +1829,9 @@ def _send_reminder_message(slack_client, channel: str):
         if not is_active:
             continue
         name = row[0] if row[0] else ""
-        category = row[2] if len(row) > 2 else ""
-        notes = row[5] if len(row) > 5 else ""
-        url = row[6] if len(row) > 6 else ""
+        category = row[1] if len(row) > 1 else ""
+        url = row[5] if len(row) > 5 else ""
+        notes = row[6] if len(row) > 6 else ""
 
         if category == "manual":
             if url:
