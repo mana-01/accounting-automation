@@ -1497,6 +1497,8 @@ def handle_share(ack, respond, body, client):
 
     try:
         from api.services.invoice_fetcher import invoice_fetcher, parse_period
+        import time as _time
+        import ssl
 
         accountant_card_folder_id = os.environ.get("ACCOUNTANT_CARD_FOLDER_ID", "")
         accountant_bank_folder_id = os.environ.get("ACCOUNTANT_BANK_FOLDER_ID", "")
@@ -1512,26 +1514,40 @@ def handle_share(ack, respond, body, client):
         periods = parse_period(text)
         period_label = f"{periods[0]['year']}年{periods[0]['month']}月" if periods else text
 
-        # Driveフォルダから直接ファイルを取得（フォルダ構造が正式なソース）
-        drive_files = invoice_fetcher.get_drive_files_for_period(text)
-        card_folders = drive_files["card"]
-        bank_folders = drive_files["bank"]
+        # SSLエラーに対応するリトライ（最大3回）
+        last_error = None
+        for attempt in range(3):
+            try:
+                # Driveフォルダから直接ファイルを取得
+                drive_files = invoice_fetcher.get_drive_files_for_period(text)
+                card_folders = drive_files["card"]
+                bank_folders = drive_files["bank"]
 
-        if not card_folders and not bank_folders:
-            client.chat_postMessage(
-                channel=user_id,
-                text=f"⚠️ {period_label} の請求書がありません。先に `/accounting-fetch-invoices {text}` で取得してください。"
-            )
-            return
+                if not card_folders and not bank_folders:
+                    client.chat_postMessage(
+                        channel=user_id,
+                        text=f"⚠️ {period_label} の請求書がありません。先に `/accounting-fetch-invoices {text}` で取得してください。"
+                    )
+                    return
 
-        # フォルダごと税理士共有フォルダにコピー
-        result = _copy_to_accountant_folders(
-            invoice_fetcher.drive,
-            card_folders,
-            bank_folders,
-            accountant_card_folder_id,
-            accountant_bank_folder_id
-        )
+                # フォルダごと税理士共有フォルダにコピー
+                result = _copy_to_accountant_folders(
+                    invoice_fetcher.drive,
+                    card_folders,
+                    bank_folders,
+                    accountant_card_folder_id,
+                    accountant_bank_folder_id
+                )
+                last_error = None
+                break
+            except (ssl.SSLError, ConnectionError, OSError) as e:
+                last_error = e
+                print(f"[accounting-share] SSL/connection error (attempt {attempt+1}/3): {e}")
+                if attempt < 2:
+                    _time.sleep(2 ** attempt)
+
+        if last_error:
+            raise last_error
 
         # 結果メッセージ
         result_lines = [f"✅ *{period_label}* のファイルを税理士さんの共有フォルダにコピーしました！\n"]
@@ -1733,16 +1749,21 @@ def _copy_to_accountant_folders(
         file_ids = folder_info["file_ids"]
         subfolder_id = get_or_create_subfolder(accountant_card_folder_id, folder_name)
         for file_id in file_ids:
-            try:
-                drive_service.files().copy(
-                    fileId=file_id,
-                    body={"parents": [subfolder_id]},
-                    fields="id",
-                    supportsAllDrives=True
-                ).execute()
-                result["card_count"] += 1
-            except Exception as e:
-                print(f"Failed to copy card file {file_id}: {e}")
+            for attempt in range(3):
+                try:
+                    drive_service.files().copy(
+                        fileId=file_id,
+                        body={"parents": [subfolder_id]},
+                        fields="id",
+                        supportsAllDrives=True
+                    ).execute()
+                    result["card_count"] += 1
+                    break
+                except Exception as e:
+                    print(f"Failed to copy card file {file_id} (attempt {attempt+1}/3): {e}")
+                    if attempt < 2:
+                        import time as _time
+                        _time.sleep(2 ** attempt)
         result["card_folder_urls"].append(
             f"https://drive.google.com/drive/folders/{subfolder_id}"
         )
@@ -1755,16 +1776,21 @@ def _copy_to_accountant_folders(
         file_ids = folder_info["file_ids"]
         subfolder_id = get_or_create_subfolder(accountant_bank_folder_id, folder_name)
         for file_id in file_ids:
-            try:
-                drive_service.files().copy(
-                    fileId=file_id,
-                    body={"parents": [subfolder_id]},
-                    fields="id",
-                    supportsAllDrives=True
-                ).execute()
-                result["bank_count"] += 1
-            except Exception as e:
-                print(f"Failed to copy bank file {file_id}: {e}")
+            for attempt in range(3):
+                try:
+                    drive_service.files().copy(
+                        fileId=file_id,
+                        body={"parents": [subfolder_id]},
+                        fields="id",
+                        supportsAllDrives=True
+                    ).execute()
+                    result["bank_count"] += 1
+                    break
+                except Exception as e:
+                    print(f"Failed to copy bank file {file_id} (attempt {attempt+1}/3): {e}")
+                    if attempt < 2:
+                        import time as _time
+                        _time.sleep(2 ** attempt)
         result["bank_folder_urls"].append(
             f"https://drive.google.com/drive/folders/{subfolder_id}"
         )
