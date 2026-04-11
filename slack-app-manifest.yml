@@ -42,6 +42,9 @@ features:
       description: Share invoices with accountant
       usage_hint: "[期間 例: 2026年2月]"
       should_escape: false
+    - command: /accounting-test-reminder
+      description: Send test reminder message
+      should_escape: false
 oauth_config:
   scopes:
     bot:

@@ -62,6 +62,10 @@ features:
       url: https://accounting-automation-nine.vercel.app/api/slack
       usage_hint: "[YYYYMM]"
       should_escape: false
+    - command: /accounting-test-reminder
+      description: Send test reminder message
+      url: https://accounting-automation-nine.vercel.app/api/slack
+      should_escape: false
 oauth_config:
   scopes:
     bot:
