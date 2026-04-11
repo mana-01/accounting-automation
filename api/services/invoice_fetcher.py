@@ -401,21 +401,48 @@ def analyze_original_filename(filename: str) -> dict:
     }
 
 
+def _parse_date_part(date_str: str):
+    """日付文字列をYYYY-MM-DD形式に変換。無効ならNoneを返す"""
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', date_str):
+        return date_str
+    elif re.match(r'^\d{8}$', date_str):
+        return f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+    elif re.match(r'^\d{6}$', date_str):
+        return f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:6]}"
+    return None
+
+
 def parse_invoice_filename(filename: str) -> dict:
     """
     命名ルールに従ったファイル名からdate, vendor, amountを抽出する。
-    フォーマット: {請求日}_{請求元}_{金額}.pdf
+    フォーマット:
+      3パート: {請求日}_{請求元}_{金額}.pdf
+      2パート: {請求日}_{金額}.pdf（vendorはNone → Geminiで補完）
     パース戦略: 最初の要素=date, 最後の要素=amount, 中間=vendor
     """
     # 拡張子を除去
     name = re.sub(r'\.pdf$', '', filename, flags=re.IGNORECASE)
     parts = name.split("_")
 
-    if len(parts) < 3:
-        # 命名ルールに従っていないファイル名
-        return {"date": None, "vendor": filename, "amount": None}
+    if len(parts) < 2:
+        return {"date": None, "vendor": None, "amount": None}
 
-    date = parts[0]
+    # 2パートの場合: {日付}_{金額} → vendorはNone
+    if len(parts) == 2:
+        date = _parse_date_part(parts[0])
+        amount = None
+        try:
+            parsed = int(parts[1].replace(",", ""))
+            if parsed > 0:
+                amount = parsed
+        except (ValueError, TypeError):
+            pass
+        if date and amount:
+            return {"date": date, "vendor": None, "amount": amount}
+        return {"date": date, "vendor": None, "amount": None}
+
+    # 3パート以上: {日付}_{ベンダー}_{金額}
+    date = _parse_date_part(parts[0])
     amount_str = parts[-1]
     vendor = "_".join(parts[1:-1])
 
@@ -428,17 +455,9 @@ def parse_invoice_filename(filename: str) -> dict:
     except (ValueError, TypeError):
         pass
 
-    # 日付の簡易バリデーション (YYYY-MM-DD, YYYYMMDD, YYMMDD)
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', date):
-        pass  # already in YYYY-MM-DD format
-    elif re.match(r'^\d{8}$', date):
-        # YYYYMMDD → YYYY-MM-DD に正規化
-        date = f"{date[:4]}-{date[4:6]}-{date[6:8]}"
-    elif re.match(r'^\d{6}$', date):
-        # YYMMDD → YYYY-MM-DD に正規化（2000年代を仮定）
-        date = f"20{date[:2]}-{date[2:4]}-{date[4:6]}"
-    else:
-        date = None
+    # 日付も金額もパースできなかった場合は命名ルールに合致していない
+    if date is None and amount is None:
+        return {"date": None, "vendor": None, "amount": None}
 
     return {
         "date": date,
