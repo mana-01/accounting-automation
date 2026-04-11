@@ -160,12 +160,14 @@ def handle_diagnose(ack, respond):
 
 @slack_app.command("/accounting-test-reminder")
 def handle_test_reminder(ack, respond, body, client):
-    """リマインドメッセージのテスト送信"""
+    """リマインドメッセージのテスト送信＆通知チャンネル設定"""
     ack()
     try:
         channel_id = body.get("channel_id")
         _send_reminder_message(client, channel_id)
-        respond({"response_type": "ephemeral", "text": "✅ リマインドメッセージを送信しました。"})
+        # このチャンネルをcron通知先として保存
+        _save_notification_channel(channel_id)
+        respond({"response_type": "ephemeral", "text": f"✅ リマインドメッセージを送信しました。今後のcron通知もこのチャンネルに届きます。"})
     except Exception as e:
         respond({"response_type": "ephemeral", "text": f"❌ エラー: {e}"})
 
@@ -1814,7 +1816,7 @@ def cron_hellotrunk():
 
         # Slack通知
         try:
-            notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+            notification_channel = _get_notification_channel() or os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
             slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
             slack_client.chat_postMessage(
                 channel=notification_channel,
@@ -1971,12 +1973,17 @@ def _send_reminder_message(slack_client, channel: str):
 def cron_reminder():
     """毎月3日にVercel Cronから呼ばれる月次リマインド通知エンドポイント"""
     try:
-        notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+        # スプレッドシートから通知先チャンネルを取得（未設定なら環境変数にフォールバック）
+        notification_channel = _get_notification_channel() or os.environ.get("SLACK_NOTIFICATION_CHANNEL", "")
+        if not notification_channel:
+            print("[cron/reminder] No notification channel configured. Use /accounting-test-reminder to set one.")
+            return json.dumps({"status": "skipped", "reason": "no channel configured"}, ensure_ascii=False), 200
+
         slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
         period = _send_reminder_message(slack_client, notification_channel)
 
-        return json.dumps({"status": "sent", "period": period}, ensure_ascii=False), 200
+        return json.dumps({"status": "sent", "period": period, "channel": notification_channel}, ensure_ascii=False), 200
 
     except Exception as e:
         print(f"[cron/reminder] Error: {e}")
@@ -2012,7 +2019,7 @@ def cron_fetch_invoices():
 
         # Slack通知
         try:
-            notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
+            notification_channel = _get_notification_channel() or os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
             slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
             if saved > 0 or errors:
@@ -2055,6 +2062,75 @@ def _get_subscription_sheets():
     """subscriptions シートのAPIアクセスを取得"""
     from api.services.invoice_fetcher import invoice_fetcher
     return invoice_fetcher.sheets, invoice_fetcher.spreadsheet_id
+
+
+def _save_notification_channel(channel_id: str):
+    """通知先チャンネルIDをsettingsシートに保存"""
+    sheets, spreadsheet_id = _get_subscription_sheets()
+    # settingsシートが無ければ作成
+    try:
+        sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="settings!A1"
+        ).execute()
+    except Exception:
+        try:
+            sheets.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body={"requests": [{"addSheet": {"properties": {"title": "settings"}}}]}
+            ).execute()
+            sheets.spreadsheets().values().update(
+                spreadsheetId=spreadsheet_id,
+                range="settings!A1",
+                valueInputOption="RAW",
+                body={"values": [["key", "value"]]}
+            ).execute()
+        except Exception:
+            pass
+
+    # notification_channel 行を探して更新 or 追加
+    result = sheets.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id,
+        range="settings!A:B"
+    ).execute()
+    rows = result.get("values", [])
+    row_idx = None
+    for i, row in enumerate(rows):
+        if row and row[0] == "notification_channel":
+            row_idx = i
+            break
+
+    if row_idx is not None:
+        sheets.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=f"settings!B{row_idx + 1}",
+            valueInputOption="RAW",
+            body={"values": [[channel_id]]}
+        ).execute()
+    else:
+        sheets.spreadsheets().values().append(
+            spreadsheetId=spreadsheet_id,
+            range="settings!A:B",
+            valueInputOption="RAW",
+            body={"values": [["notification_channel", channel_id]]}
+        ).execute()
+
+
+def _get_notification_channel() -> str:
+    """settingsシートから通知先チャンネルIDを取得"""
+    try:
+        sheets, spreadsheet_id = _get_subscription_sheets()
+        result = sheets.spreadsheets().values().get(
+            spreadsheetId=spreadsheet_id,
+            range="settings!A:B"
+        ).execute()
+        rows = result.get("values", [])
+        for row in rows:
+            if row and row[0] == "notification_channel" and len(row) > 1:
+                return row[1]
+    except Exception:
+        pass
+    return ""
 
 
 def _read_subscriptions():
