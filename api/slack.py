@@ -44,6 +44,7 @@ def handle_help(ack, respond):
 • `/accounting-reconcile [期間]` - CSV照会を実行
 • `/accounting-share [期間]` - 税理士さんに請求書を共有
 • `/accounting-generate-hellotrunk [期間]` - ハロートランク請求書を手動生成
+• `/accounting-test-reminder` - リマインドメッセージをテスト送信
 • `/accounting-diagnose` - Google Drive アクセス診断
 
 *期間指定の例:*
@@ -155,6 +156,18 @@ def handle_diagnose(ack, respond):
             "response_type": "ephemeral",
             "text": f"❌ 診断中にエラー: {str(e)}\n```{traceback.format_exc()[-500:]}```"
         })
+
+
+@slack_app.command("/accounting-test-reminder")
+def handle_test_reminder(ack, respond, body, client):
+    """リマインドメッセージのテスト送信"""
+    ack()
+    try:
+        channel_id = body.get("channel_id")
+        _send_reminder_message(client, channel_id)
+        respond({"response_type": "ephemeral", "text": "✅ リマインドメッセージを送信しました。"})
+    except Exception as e:
+        respond({"response_type": "ephemeral", "text": f"❌ エラー: {e}"})
 
 
 @slack_app.command("/accounting-status")
@@ -1793,6 +1806,130 @@ def cron_hellotrunk():
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
 
 
+def _send_reminder_message(slack_client, channel: str):
+    """月次リマインドメッセージを構築して送信する共通関数"""
+    now = datetime.now()
+    period = f"{now.year}年{now.month}月"
+
+    # subscriptionsシートから手動確認項目と固定スキャン項目を取得
+    sheets = _get_subscription_sheets()
+    rows = sheets.get("values", [])[1:]  # ヘッダー行を除く
+
+    manual_lines = []
+    fixed_lines = []
+    for row in rows:
+        if len(row) < 10:
+            continue
+        # is_active列の判定（subscriptionsシートのJ列 = index 9）
+        is_active = row[9].strip().upper() in ("TRUE", "1", "YES") if len(row) > 9 else False
+        if not is_active:
+            continue
+        name = row[0] if row[0] else ""
+        category = row[2] if len(row) > 2 else ""
+        notes = row[5] if len(row) > 5 else ""
+        url = row[6] if len(row) > 6 else ""
+
+        if category == "manual":
+            if url:
+                line = f"• <{url}|{name}>"
+            else:
+                line = f"• {name}"
+            if notes:
+                line += f"（{notes}）"
+            manual_lines.append(line)
+        elif category == "scan":
+            line = f"• {name}"
+            if notes:
+                line += f"（{notes}）"
+            fixed_lines.append(line)
+
+    manual_text = "\n".join(manual_lines) if manual_lines else "• _項目なし_"
+    fixed_text = "\n".join(fixed_lines) if fixed_lines else "• _項目なし_"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e"}
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "今月の経理作業を開始しましょう！\nまず以下の準備をお願いします。"
+            }
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*① 参照元データ取得*\n"
+                    "それぞれの明細を取得してきてください\n"
+                    "• <https://www.saisoncard.co.jp/|クレジットカード（セゾンカード）>\n"
+                    "• <https://sso.gmo-aozora.com/corp/b2c/login|銀行（GMOあおぞらネット銀行）>"
+                )
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*② 手動取得項目*\n{manual_text}"
+            }
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"*③ 固定スキャン*\n{fixed_text}"
+            }
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    "*流れ*\n"
+                    "☑︎ CSVを2つアップロード\n"
+                    "☑︎ `/accounting-reconcile` で足りていないものを確認\n"
+                    "☑︎ 不足分をSlackにアップロード\n"
+                    "☑︎ `/accounting-reconcile` で再確認\n"
+                    "☑︎ すべて揃ったら `/accounting-share` でエナリさんに共有"
+                )
+            }
+        },
+        {
+            "type": "context",
+            "elements": [
+                {
+                    "type": "mrkdwn",
+                    "text": "②③の項目は `/accounting-subscriptions` で編集できます"
+                }
+            ]
+        },
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "📊 状況を確認"},
+                    "action_id": "check_status_from_reminder"
+                }
+            ]
+        }
+    ]
+
+    slack_client.chat_postMessage(
+        channel=channel,
+        text=f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e",
+        blocks=blocks
+    )
+
+    return period
+
+
 @app.route("/api/cron/reminder", methods=["GET"])
 def cron_reminder():
     """毎月3日にVercel Cronから呼ばれる月次リマインド通知エンドポイント"""
@@ -1800,124 +1937,7 @@ def cron_reminder():
         notification_channel = os.environ.get("SLACK_NOTIFICATION_CHANNEL", "#accounting")
         slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
-        now = datetime.now()
-        period = f"{now.year}年{now.month}月"
-
-        # subscriptionsシートから手動確認項目と固定スキャン項目を取得
-        sheets = _get_subscription_sheets()
-        rows = sheets.get("values", [])[1:]  # ヘッダー行を除く
-
-        manual_lines = []
-        fixed_lines = []
-        for row in rows:
-            if len(row) < 10:
-                continue
-            # is_active列の判定（subscriptionsシートのJ列 = index 9）
-            is_active = row[9].strip().upper() in ("TRUE", "1", "YES") if len(row) > 9 else False
-            if not is_active:
-                continue
-            name = row[0] if row[0] else ""
-            category = row[2] if len(row) > 2 else ""
-            notes = row[5] if len(row) > 5 else ""
-            url = row[6] if len(row) > 6 else ""
-
-            if category == "manual":
-                if url:
-                    line = f"• <{url}|{name}>"
-                else:
-                    line = f"• {name}"
-                if notes:
-                    line += f"（{notes}）"
-                manual_lines.append(line)
-            elif category == "scan":
-                line = f"• {name}"
-                if notes:
-                    line += f"（{notes}）"
-                fixed_lines.append(line)
-
-        manual_text = "\n".join(manual_lines) if manual_lines else "• _項目なし_"
-        fixed_text = "\n".join(fixed_lines) if fixed_lines else "• _項目なし_"
-
-        blocks = [
-            {
-                "type": "header",
-                "text": {"type": "plain_text", "text": f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e"}
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": "今月の経理作業を開始しましょう！\nまず以下の準備をお願いします。"
-                }
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*① 参照元データ取得*\n"
-                        "それぞれの明細を取得してきてください\n"
-                        "• <https://www.saisoncard.co.jp/|クレジットカード（セゾンカード）>\n"
-                        "• <https://sso.gmo-aozora.com/corp/b2c/login|銀行（GMOあおぞらネット銀行）>"
-                    )
-                }
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*② 手動取得項目*\n{manual_text}"
-                }
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*③ 固定スキャン*\n{fixed_text}"
-                }
-            },
-            {"type": "divider"},
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": (
-                        "*流れ*\n"
-                        "☑︎ CSVを2つアップロード\n"
-                        "☑︎ `/accounting-reconcile` で足りていないものを確認\n"
-                        "☑︎ 不足分をSlackにアップロード\n"
-                        "☑︎ `/accounting-reconcile` で再確認\n"
-                        "☑︎ すべて揃ったら `/accounting-share` でエナリさんに共有"
-                    )
-                }
-            },
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": "②③の項目は `/accounting-subscriptions` で編集できます"
-                    }
-                ]
-            },
-            {
-                "type": "actions",
-                "elements": [
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "📊 状況を確認"},
-                        "action_id": "check_status_from_reminder"
-                    }
-                ]
-            }
-        ]
-
-        slack_client.chat_postMessage(
-            channel=notification_channel,
-            text=f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e",
-            blocks=blocks
-        )
+        period = _send_reminder_message(slack_client, notification_channel)
 
         return json.dumps({"status": "sent", "period": period}, ensure_ascii=False), 200
 
