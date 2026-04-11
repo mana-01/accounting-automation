@@ -1393,8 +1393,15 @@ def handle_reconcile(ack, respond, body, client):
         credit_vendors = defaultdict(lambda: {"count": 0, "total": 0, "dates": []})
         fee_count = 0
 
+        # カード会社・銀行自体の取引は照合対象外
+        EXCLUDED_VENDORS = ["ｾｿﾞﾝ", "セゾン", "ﾊﾏｷﾞﾝ", "ハマギン", "浜銀"]
+
         for tx in reconcile_result["missing"]:
-            if "手数料" in tx["vendor"]:
+            vendor = tx["vendor"]
+            if "手数料" in vendor:
+                fee_count += 1
+                continue
+            if any(ex in vendor for ex in EXCLUDED_VENDORS):
                 fee_count += 1
                 continue
 
