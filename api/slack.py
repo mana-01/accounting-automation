@@ -3,6 +3,7 @@
 import os
 import json
 import re
+import threading
 import traceback
 from datetime import datetime
 from flask import Flask, request, Response
@@ -160,16 +161,33 @@ def handle_diagnose(ack, respond):
 
 @slack_app.command("/accounting-test-reminder")
 def handle_test_reminder(ack, respond, body, client):
-    """リマインドメッセージのテスト送信＆通知チャンネル設定"""
+    """リマインドメッセージのテスト送信＆通知チャンネル設定
+
+    process_before_response=True 環境では bolt の HTTP 応答はハンドラ完了時に
+    返るため、シートAPI×2＋chat_postMessage を直列で行うと Slack の3秒制限
+    （operation_timeout）に引っかかる。重い処理はバックグラウンドスレッドへ。
+    """
     ack()
-    try:
-        channel_id = body.get("channel_id")
-        _send_reminder_message(client, channel_id)
-        # このチャンネルをcron通知先として保存
-        _save_notification_channel(channel_id)
-        respond({"response_type": "ephemeral", "text": f"✅ リマインドメッセージを送信しました。今後のcron通知もこのチャンネルに届きます。"})
-    except Exception as e:
-        respond({"response_type": "ephemeral", "text": f"❌ エラー: {e}"})
+    channel_id = body.get("channel_id")
+    respond({"response_type": "ephemeral", "text": "⏳ リマインドを送信しています..."})
+
+    def _work():
+        try:
+            try:
+                _save_notification_channel(channel_id)
+            except Exception as save_err:
+                print(f"[test-reminder] Failed to save notification channel: {save_err}")
+            _send_reminder_message(client, channel_id)
+            respond({"response_type": "ephemeral", "text": "✅ リマインドメッセージを送信しました。今後のcron通知もこのチャンネルに届きます。"})
+        except Exception as e:
+            print(f"[test-reminder] Error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                respond({"response_type": "ephemeral", "text": f"❌ エラー: {type(e).__name__}: {e}"})
+            except Exception:
+                pass
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 @slack_app.command("/accounting-status")
@@ -1972,23 +1990,45 @@ def _send_reminder_message(slack_client, channel: str):
 @app.route("/api/cron/reminder", methods=["GET"])
 def cron_reminder():
     """毎月3日にVercel Cronから呼ばれる月次リマインド通知エンドポイント"""
+    notification_channel = ""
+    slack_client = None
     try:
-        # スプレッドシートから通知先チャンネルを取得（未設定なら環境変数にフォールバック）
-        notification_channel = _get_notification_channel() or os.environ.get("SLACK_NOTIFICATION_CHANNEL", "")
-        if not notification_channel:
-            print("[cron/reminder] No notification channel configured. Use /accounting-test-reminder to set one.")
-            return json.dumps({"status": "skipped", "reason": "no channel configured"}, ensure_ascii=False), 200
-
+        # スプレッドシートから通知先チャンネルを取得（未設定なら環境変数→#accountingへフォールバック）
+        notification_channel = (
+            _get_notification_channel()
+            or os.environ.get("SLACK_NOTIFICATION_CHANNEL", "")
+            or "#accounting"
+        )
         slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
 
+        print(f"[cron/reminder] Sending to channel={notification_channel}")
         period = _send_reminder_message(slack_client, notification_channel)
+        print(f"[cron/reminder] Sent for {period}")
 
         return json.dumps({"status": "sent", "period": period, "channel": notification_channel}, ensure_ascii=False), 200
 
     except Exception as e:
-        print(f"[cron/reminder] Error: {e}")
         import traceback
-        traceback.print_exc()
+        err_detail = traceback.format_exc()
+        print(f"[cron/reminder] Error: {type(e).__name__}: {e}")
+        print(err_detail)
+
+        # フル版が組み立てられなくても、最低限のリマインドだけは必ず飛ばす
+        try:
+            if slack_client is None:
+                slack_client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN"))
+            now = datetime.now()
+            period = f"{now.year}年{now.month}月"
+            slack_client.chat_postMessage(
+                channel=notification_channel or "#accounting",
+                text=(
+                    f"\U0001f4c5 {period} 経理作業はじめるよ！\U0001f31e\n"
+                    f"（詳細リマインドの組み立てに失敗したため簡易版です: `{type(e).__name__}: {e}`）"
+                ),
+            )
+        except Exception as fallback_err:
+            print(f"[cron/reminder] Fallback notification also failed: {fallback_err}")
+
         return json.dumps({"status": "error", "error": str(e)}, ensure_ascii=False), 500
 
 
