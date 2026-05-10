@@ -3,6 +3,7 @@
 import os
 import json
 import re
+import threading
 import traceback
 from datetime import datetime
 from flask import Flask, request, Response
@@ -160,19 +161,33 @@ def handle_diagnose(ack, respond):
 
 @slack_app.command("/accounting-test-reminder")
 def handle_test_reminder(ack, respond, body, client):
-    """リマインドメッセージのテスト送信＆通知チャンネル設定"""
+    """リマインドメッセージのテスト送信＆通知チャンネル設定
+
+    process_before_response=True 環境では bolt の HTTP 応答はハンドラ完了時に
+    返るため、シートAPI×2＋chat_postMessage を直列で行うと Slack の3秒制限
+    （operation_timeout）に引っかかる。重い処理はバックグラウンドスレッドへ。
+    """
     ack()
-    try:
-        channel_id = body.get("channel_id")
-        # 先にチャンネルIDを保存してから送信（送信失敗時もcron通知先は確実に登録される）
+    channel_id = body.get("channel_id")
+    respond({"response_type": "ephemeral", "text": "⏳ リマインドを送信しています..."})
+
+    def _work():
         try:
-            _save_notification_channel(channel_id)
-        except Exception as save_err:
-            print(f"[test-reminder] Failed to save notification channel: {save_err}")
-        _send_reminder_message(client, channel_id)
-        respond({"response_type": "ephemeral", "text": f"✅ リマインドメッセージを送信しました。今後のcron通知もこのチャンネルに届きます。"})
-    except Exception as e:
-        respond({"response_type": "ephemeral", "text": f"❌ エラー: {e}"})
+            try:
+                _save_notification_channel(channel_id)
+            except Exception as save_err:
+                print(f"[test-reminder] Failed to save notification channel: {save_err}")
+            _send_reminder_message(client, channel_id)
+            respond({"response_type": "ephemeral", "text": "✅ リマインドメッセージを送信しました。今後のcron通知もこのチャンネルに届きます。"})
+        except Exception as e:
+            print(f"[test-reminder] Error: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            try:
+                respond({"response_type": "ephemeral", "text": f"❌ エラー: {type(e).__name__}: {e}"})
+            except Exception:
+                pass
+
+    threading.Thread(target=_work, daemon=True).start()
 
 
 @slack_app.command("/accounting-status")
