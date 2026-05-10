@@ -164,9 +164,12 @@ def handle_test_reminder(ack, respond, body, client):
     ack()
     try:
         channel_id = body.get("channel_id")
+        # 先にチャンネルIDを保存してから送信（送信失敗時もcron通知先は確実に登録される）
+        try:
+            _save_notification_channel(channel_id)
+        except Exception as save_err:
+            print(f"[test-reminder] Failed to save notification channel: {save_err}")
         _send_reminder_message(client, channel_id)
-        # このチャンネルをcron通知先として保存
-        _save_notification_channel(channel_id)
         respond({"response_type": "ephemeral", "text": f"✅ リマインドメッセージを送信しました。今後のcron通知もこのチャンネルに届きます。"})
     except Exception as e:
         respond({"response_type": "ephemeral", "text": f"❌ エラー: {e}"})
