@@ -948,7 +948,7 @@ class InvoiceFetcher:
                 if len(row) < 2:
                     continue
                 existing_amount = self._parse_amount(row[1] if len(row) > 1 else "")
-                if existing_amount is None or existing_amount != new_amount:
+                if existing_amount is None or not self._amounts_match(new_amount, existing_amount):
                     continue
 
                 existing_date = self._normalize_date(row[2]) if len(row) > 2 and row[2] else ""
@@ -983,7 +983,7 @@ class InvoiceFetcher:
 
         row = [
             invoice_data.get("id", ""),
-            invoice_data.get("vendor", ""),
+            self._normalize_for_storage(invoice_data.get("vendor", "")),
             invoice_data.get("amount", ""),
             invoice_data.get("date", ""),
             invoice_data.get("source", ""),
@@ -1682,6 +1682,34 @@ class InvoiceFetcher:
         text = unicodedata.normalize("NFKC", text)
         text = "".join(text.split())
         return text.lower().strip()
+
+    @staticmethod
+    def _normalize_for_storage(text: str) -> str:
+        """
+        シート保存用の正規化。表示は保ったままUnicodeの表記ゆれだけ潰す。
+
+        PDFやメールから抽出した文字列は濁点が結合文字で分解されていることがある
+        （例: 「ダ」= U+30BF + U+3099 の2文字）。見た目は同じでも別の文字列として
+        扱われるため、検索・集計・名寄せが全てすり抜ける。NFKCで合成済みの
+        1文字（U+30C0）に統一しておく。
+        """
+        if not text:
+            return ""
+        import unicodedata
+        return unicodedata.normalize("NFKC", str(text)).strip()
+
+    @staticmethod
+    def _amounts_match(amount1: int, amount2: int) -> bool:
+        """
+        金額の一致判定。外貨建て請求は取込のたびに為替換算され数円ズレることが
+        あるため（例: $135.01 が 22,112円 / 22,120円）、わずかな差は同額とみなす。
+        許容幅は 0.1% かつ最大50円。少額請求（110円 vs 130円など）を
+        取り違えないよう絶対値でも上限をかける。
+        """
+        if amount1 == amount2:
+            return True
+        tolerance = max(1, min(50, int(max(amount1, amount2) * 0.001)))
+        return abs(amount1 - amount2) <= tolerance
 
     @staticmethod
     def _strip_vendor_noise(name: str) -> str:
