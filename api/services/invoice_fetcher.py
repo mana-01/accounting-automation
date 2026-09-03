@@ -412,6 +412,24 @@ def _parse_date_part(date_str: str):
     return None
 
 
+def _parse_amount_part(amount_str: str) -> int | None:
+    """
+    ファイル名の金額部分を数値に変換する。
+    「2850円」「¥2,850」「2,850」「2850JPY」など通貨記号・単位付きでも読めるようにする。
+    数字が1文字もなければNone。
+    """
+    if not amount_str:
+        return None
+    cleaned = re.sub(r"[^\d]", "", str(amount_str))
+    if not cleaned:
+        return None
+    try:
+        parsed = int(cleaned)
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def parse_invoice_filename(filename: str) -> dict:
     """
     命名ルールに従ったファイル名からdate, vendor, amountを抽出する。
@@ -430,13 +448,7 @@ def parse_invoice_filename(filename: str) -> dict:
     # 2パートの場合: {日付}_{金額} → vendorはNone
     if len(parts) == 2:
         date = _parse_date_part(parts[0])
-        amount = None
-        try:
-            parsed = int(parts[1].replace(",", ""))
-            if parsed > 0:
-                amount = parsed
-        except (ValueError, TypeError):
-            pass
+        amount = _parse_amount_part(parts[1])
         if date and amount:
             return {"date": date, "vendor": None, "amount": amount}
         return {"date": date, "vendor": None, "amount": None}
@@ -446,14 +458,8 @@ def parse_invoice_filename(filename: str) -> dict:
     amount_str = parts[-1]
     vendor = "_".join(parts[1:-1])
 
-    # 金額をパース
-    amount = None
-    try:
-        parsed = int(amount_str.replace(",", ""))
-        if parsed > 0:
-            amount = parsed
-    except (ValueError, TypeError):
-        pass
+    # 金額をパース（「2850円」「¥2,850」等の表記に対応）
+    amount = _parse_amount_part(amount_str)
 
     # 日付も金額もパースできなかった場合は命名ルールに合致していない
     if date is None and amount is None:
