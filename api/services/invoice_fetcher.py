@@ -412,6 +412,24 @@ def _parse_date_part(date_str: str):
     return None
 
 
+def _parse_amount_part(amount_str: str) -> int | None:
+    """
+    ファイル名の金額部分を数値に変換する。
+    「2850円」「¥2,850」「2,850」「2850JPY」など通貨記号・単位付きでも読めるようにする。
+    数字が1文字もなければNone。
+    """
+    if not amount_str:
+        return None
+    cleaned = re.sub(r"[^\d]", "", str(amount_str))
+    if not cleaned:
+        return None
+    try:
+        parsed = int(cleaned)
+    except (ValueError, TypeError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def parse_invoice_filename(filename: str) -> dict:
     """
     命名ルールに従ったファイル名からdate, vendor, amountを抽出する。
@@ -430,13 +448,7 @@ def parse_invoice_filename(filename: str) -> dict:
     # 2パートの場合: {日付}_{金額} → vendorはNone
     if len(parts) == 2:
         date = _parse_date_part(parts[0])
-        amount = None
-        try:
-            parsed = int(parts[1].replace(",", ""))
-            if parsed > 0:
-                amount = parsed
-        except (ValueError, TypeError):
-            pass
+        amount = _parse_amount_part(parts[1])
         if date and amount:
             return {"date": date, "vendor": None, "amount": amount}
         return {"date": date, "vendor": None, "amount": None}
@@ -446,14 +458,8 @@ def parse_invoice_filename(filename: str) -> dict:
     amount_str = parts[-1]
     vendor = "_".join(parts[1:-1])
 
-    # 金額をパース
-    amount = None
-    try:
-        parsed = int(amount_str.replace(",", ""))
-        if parsed > 0:
-            amount = parsed
-    except (ValueError, TypeError):
-        pass
+    # 金額をパース（「2850円」「¥2,850」等の表記に対応）
+    amount = _parse_amount_part(amount_str)
 
     # 日付も金額もパースできなかった場合は命名ルールに合致していない
     if date is None and amount is None:
@@ -948,7 +954,7 @@ class InvoiceFetcher:
                 if len(row) < 2:
                     continue
                 existing_amount = self._parse_amount(row[1] if len(row) > 1 else "")
-                if existing_amount is None or existing_amount != new_amount:
+                if existing_amount is None or not self._amounts_match(new_amount, existing_amount):
                     continue
 
                 existing_date = self._normalize_date(row[2]) if len(row) > 2 and row[2] else ""
@@ -983,7 +989,7 @@ class InvoiceFetcher:
 
         row = [
             invoice_data.get("id", ""),
-            invoice_data.get("vendor", ""),
+            self._normalize_for_storage(invoice_data.get("vendor", "")),
             invoice_data.get("amount", ""),
             invoice_data.get("date", ""),
             invoice_data.get("source", ""),
@@ -1682,6 +1688,34 @@ class InvoiceFetcher:
         text = unicodedata.normalize("NFKC", text)
         text = "".join(text.split())
         return text.lower().strip()
+
+    @staticmethod
+    def _normalize_for_storage(text: str) -> str:
+        """
+        シート保存用の正規化。表示は保ったままUnicodeの表記ゆれだけ潰す。
+
+        PDFやメールから抽出した文字列は濁点が結合文字で分解されていることがある
+        （例: 「ダ」= U+30BF + U+3099 の2文字）。見た目は同じでも別の文字列として
+        扱われるため、検索・集計・名寄せが全てすり抜ける。NFKCで合成済みの
+        1文字（U+30C0）に統一しておく。
+        """
+        if not text:
+            return ""
+        import unicodedata
+        return unicodedata.normalize("NFKC", str(text)).strip()
+
+    @staticmethod
+    def _amounts_match(amount1: int, amount2: int) -> bool:
+        """
+        金額の一致判定。外貨建て請求は取込のたびに為替換算され数円ズレることが
+        あるため（例: $135.01 が 22,112円 / 22,120円）、わずかな差は同額とみなす。
+        許容幅は 0.1% かつ最大50円。少額請求（110円 vs 130円など）を
+        取り違えないよう絶対値でも上限をかける。
+        """
+        if amount1 == amount2:
+            return True
+        tolerance = max(1, min(50, int(max(amount1, amount2) * 0.001)))
+        return abs(amount1 - amount2) <= tolerance
 
     @staticmethod
     def _strip_vendor_noise(name: str) -> str:
