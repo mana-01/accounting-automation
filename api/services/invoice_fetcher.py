@@ -1667,8 +1667,14 @@ class InvoiceFetcher:
         return d
 
     @staticmethod
-    def _dates_match(date1: str, date2: str, tolerance_days: int = 3) -> bool:
-        """2つの正規化済み日付がtolerance_days以内なら一致とみなす"""
+    def _dates_match(date1: str, date2: str, tolerance_days: int = 20) -> bool:
+        """2つの正規化済み日付がtolerance_days以内なら一致とみなす
+
+        請求書の発行日と実際の引き落とし日は月をまたぐのが普通のため、
+        既定の3日では月次の支払いを取りこぼす（例: 5/21発行の請求を6/1にまとめて振込）。
+        一方で広げすぎると、毎月同額の固定費（携帯代など）が別の月の明細と
+        誤って一致してしまうため、20日程度に留める。
+        """
         if not date1 or not date2:
             return False
         if date1 == date2:
@@ -1705,6 +1711,24 @@ class InvoiceFetcher:
         return unicodedata.normalize("NFKC", str(text)).strip()
 
     @staticmethod
+    def _amounts_match_loose(amount1: int, amount2: int) -> bool:
+        """
+        請求書とカード/銀行明細の金額一致判定。
+
+        外貨建ての請求は「請求書発行時の換算レート」と「カード会社の決済レート」が
+        異なるため、同じ取引でも数十〜数百円ズレる。
+        例: Anthropic 7/24  請求書 22,898円 / カード明細 22,995円（97円差）
+
+        許容幅は 1% かつ最大500円。国内の少額請求を取り違えないよう
+        絶対値でも上限をかける。
+        """
+        if amount1 == amount2:
+            return True
+        hi = max(amount1, amount2)
+        tolerance = max(1, min(500, int(hi * 0.01)))
+        return abs(amount1 - amount2) <= tolerance
+
+    @staticmethod
     def _amounts_match(amount1: int, amount2: int) -> bool:
         """
         金額の一致判定。外貨建て請求は取込のたびに為替換算され数円ズレることが
@@ -1721,13 +1745,17 @@ class InvoiceFetcher:
     def _strip_vendor_noise(name: str) -> str:
         """ベンダー名からCSV取引種別・銀行名・会社種別などのノイズを除去"""
         import re
+        # 全角スペースも空白として扱う（\s は全角スペースにマッチしないため）
+        SP = r"[\s\u3000]*"
         # CSV摘要のプレフィックス除去（振込、PE、デビット利用、etc.）
-        name = re.sub(r"^(振込|pe|デビット利用|クレジット|口座振替|引落|自振)\s*", "", name, flags=re.IGNORECASE)
-        # 銀行名除去（カタカナの銀行名: ミツビシユーエフジエイ、ミツイスミトモ等）
+        name = re.sub(r"^(振込|pe|デビット利用|クレジット|口座振替|引落|自振)" + SP, "", name, flags=re.IGNORECASE)
+        # 銀行名除去（先頭に限らず除去する。「振込 ミツイスミトモ クロダ セナ」のような
+        # 摘要では銀行名が2要素目に来るため、^ 固定だと除去できなかった）
         name = re.sub(
-            r"^(ミツビシユーエフジエイ|ミツイスミトモ|ミズホ|スミシンエスビーアイネツト|"
-            r"ラクテン|ナント|キヨウトシンキン|ジユウハチ|リソナ|ゆうちょ|ユウチヨ|"
-            r"ミツイスミトモギンコウ|ミズホギンコウ|smbc|mufg|sbi)\s*",
+            r"(ミツビシユーエフジエイ|ミツビシＵＦＪシンタク|ミツビシUFJシンタク|"
+            r"ミツイスミトモギンコウ|ミツイスミトモ|ミズホギンコウ|ミズホ|"
+            r"スミシンエスビーアイネツト|ラクテン|ナント|キヨウトシンキン|ジユウハチ|"
+            r"リソナ|ゆうちょ|ユウチヨ|チバ|ヨコハマ|サガミシンキン|smbc|mufg|sbi)" + SP,
             "", name, flags=re.IGNORECASE
         )
         # 会社種別除去
@@ -1813,7 +1841,7 @@ class InvoiceFetcher:
                     continue
 
                 inv_amount = self._parse_amount(inv.get("amount", ""))
-                if inv_amount is None or inv_amount != tx_amount:
+                if inv_amount is None or not self._amounts_match_loose(inv_amount, tx_amount):
                     continue
 
                 inv_date = self._normalize_date(inv.get("date", ""))
@@ -1836,7 +1864,7 @@ class InvoiceFetcher:
                     continue
 
                 inv_amount = self._parse_amount(inv.get("amount", ""))
-                if inv_amount is None or inv_amount != tx_amount:
+                if inv_amount is None or not self._amounts_match_loose(inv_amount, tx_amount):
                     continue
 
                 if self._vendors_match(tx["vendor"], inv["vendor"]):
