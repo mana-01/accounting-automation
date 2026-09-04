@@ -19,7 +19,7 @@ class TestCSVParser:
         transactions = self.parser.parse(csv_content, format_type="generic")
 
         assert len(transactions) == 2
-        assert transactions[0].date == "2026-01-15"
+        assert transactions[0].date == "2026/01/15"
         assert transactions[0].description == "AWS Monthly"
         assert transactions[0].amount == 10000
 

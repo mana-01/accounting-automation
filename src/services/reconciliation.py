@@ -111,9 +111,12 @@ class ReconciliationService:
     ) -> Optional[dict]:
         """取引に対応するサブスク・請求書を検索"""
 
+        # subscription_id -> Subscription マップ（請求書のvendor解決用）
+        sub_by_id = {s.id: s for s in subscriptions}
+
         # 1. まず請求書との完全マッチを試みる
         for invoice in invoices:
-            if self._match_invoice(transaction, invoice):
+            if self._match_invoice(transaction, invoice, sub_by_id):
                 return {
                     "subscription_id": invoice.subscription_id,
                     "invoice_id": invoice.id,
@@ -131,22 +134,55 @@ class ReconciliationService:
 
         return None
 
-    def _match_invoice(self, transaction: Transaction, invoice: Invoice) -> bool:
-        """取引と請求書がマッチするかチェック"""
-        # 金額チェック
-        if abs(transaction.amount - invoice.amount) > self.amount_tolerance:
-            return False
+    def _parse_date(self, date_str: str) -> Optional[datetime]:
+        """日付文字列を %Y/%m/%d または %Y-%m-%d でパース"""
+        if not date_str:
+            return None
+        for fmt in ("%Y/%m/%d", "%Y-%m-%d"):
+            try:
+                return datetime.strptime(date_str, fmt)
+            except ValueError:
+                continue
+        return None
 
-        # 日付チェック
-        try:
-            tx_date = datetime.strptime(transaction.date, "%Y-%m-%d")
-            inv_date = datetime.strptime(invoice.invoice_date, "%Y-%m-%d")
-            if abs((tx_date - inv_date).days) > self.date_tolerance_days:
-                return False
-        except:
-            pass
+    def _match_invoice(
+        self,
+        transaction: Transaction,
+        invoice: Invoice,
+        sub_by_id: dict
+    ) -> bool:
+        """取引と請求書がマッチするかチェック
 
-        return True
+        - 金額が一致 + 日付が許容範囲内 → マッチ
+        - 日付が許容範囲内 + 取引説明にvendor名が含まれる → マッチ（金額不一致でも重複扱い）
+        """
+        tx_date = self._parse_date(transaction.date)
+        inv_date = self._parse_date(invoice.invoice_date)
+        date_close = (
+            tx_date is not None
+            and inv_date is not None
+            and abs((tx_date - inv_date).days) <= self.date_tolerance_days
+        )
+
+        amount_matches = abs(transaction.amount - invoice.amount) <= self.amount_tolerance
+
+        if amount_matches and date_close:
+            return True
+
+        if date_close:
+            sub = sub_by_id.get(invoice.subscription_id)
+            desc_lower = transaction.description.lower()
+            candidates = [invoice.subscription_name]
+            if sub:
+                candidates.extend([sub.vendor, sub.name])
+            for cand in candidates:
+                if not cand:
+                    continue
+                cand_lower = cand.lower()
+                if cand_lower and cand_lower in desc_lower:
+                    return True
+
+        return False
 
     def _match_subscription(self, transaction: Transaction, subscription: Subscription) -> bool:
         """取引とサブスクがマッチするかチェック"""

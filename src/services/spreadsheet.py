@@ -233,13 +233,20 @@ class SpreadsheetService:
 
     # ===== CSV Transaction methods =====
 
+    @staticmethod
+    def _normalize_date(date_str: str) -> str:
+        """日付文字列を %Y/%m/%d に正規化（%Y-%m-%d も許容）"""
+        if not date_str:
+            return ""
+        return date_str.replace("-", "/").strip()
+
     def get_existing_csv_transactions(self) -> set[tuple[str, str]]:
         """既存のCSV取引キー (date, description) のセットを返す"""
         rows = self._read_sheet(SHEET_NAMES["CSV_TRANSACTIONS"])
         keys = set()
         for row in rows:
             if row and len(row) >= 2:
-                keys.add((row[0], row[1]))
+                keys.add((self._normalize_date(row[0]), row[1]))
         return keys
 
     def save_csv_transactions(self, transactions: list[Transaction]) -> None:
@@ -258,7 +265,7 @@ class SpreadsheetService:
         existing_keys = self.get_existing_csv_transactions()
         new_transactions = []
         for tx in transactions:
-            key = (tx.date, tx.description)
+            key = (self._normalize_date(tx.date), tx.description)
             if key not in existing_keys:
                 new_transactions.append(tx)
         return new_transactions

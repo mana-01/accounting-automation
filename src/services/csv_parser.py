@@ -115,7 +115,7 @@ class CSVParser:
 
                 if parsed_date and amount is not None and amount > 0 and description:
                     transactions.append(Transaction(
-                        date=parsed_date.strftime("%Y-%m-%d"),
+                        date=parsed_date.strftime("%Y/%m/%d"),
                         description=description,
                         amount=amount,
                         transaction_type="credit",
