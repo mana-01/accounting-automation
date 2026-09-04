@@ -928,16 +928,26 @@ def _process_csv(body, client, csv_type: str):
             range="csv_transactions!A2:G1000"
         ).execute()
         existing_rows = existing_result.get("values", [])
-        existing_keys = set()
-        for row in existing_rows:
-            if len(row) >= 4:
-                existing_keys.add((row[2], row[3]))  # (date, vendor)
 
-        # 新規取引のみフィルタリング
-        new_transactions = [
-            tx for tx in transactions
-            if (tx.get("date", ""), tx.get("vendor", "")) not in existing_keys
-        ]
+        # 重複キーは (date, vendor, amount) で判定する。
+        # 全銀フォーマットの出金行は摘要が空になるため、date+vendor だけだと
+        # 同じ日の取引がすべて「重複」と見なされて取り込まれない。
+        # さらに同日・同額・同摘要が複数回ある場合に備え、出現回数まで数える。
+        existing_counts: dict[tuple[str, str, str], int] = {}
+        for row in existing_rows:
+            if len(row) >= 5:
+                key = (row[2], row[3], str(row[4]).strip())
+                existing_counts[key] = existing_counts.get(key, 0) + 1
+
+        # 新規取引のみフィルタリング（既存件数を消費しながら判定）
+        remaining = dict(existing_counts)
+        new_transactions = []
+        for tx in transactions:
+            key = (tx.get("date", ""), tx.get("vendor", ""), str(tx.get("amount", 0)))
+            if remaining.get(key, 0) > 0:
+                remaining[key] -= 1  # 既存分を1件消費してスキップ
+            else:
+                new_transactions.append(tx)
         skipped_count = len(transactions) - len(new_transactions)
 
         # Spreadsheetに保存 (csv_transactions シート)
